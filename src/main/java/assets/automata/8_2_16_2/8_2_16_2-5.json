@@ -1,0 +1,61 @@
+{
+	"name" : "8_2_16_2-5",
+	"clocks" : ["c0", "c1"],
+	"actions" : ["a", "b"],
+	"locations" : [
+		{
+			"name": "l0",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l1",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l2",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l3",
+			"invariant": {},
+			"accepting": true
+		},
+		{
+			"name": "l4",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l5",
+			"invariant": {},
+			"accepting": true
+		},
+		{
+			"name": "l6",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l7",
+			"invariant": {},
+			"accepting": false
+		}
+	],
+	"transitions" : [
+		{"source": "l0","action": "b","guard": {"c0": "[8,+)","c1": "[1,+)"},"reset": [],"target": "l1"},
+		{"source": "l1","action": "b","guard": {"c0": "(12,+)","c1": "[4,+)"},"reset": ["c1"],"target": "l4"},
+		{"source": "l2","action": "a","guard": {"c0": "[4,+)","c1": "[2,+)"},"reset": [],"target": "l1"},
+		{"source": "l2","action": "b","guard": {"c0": "[14,+)","c1": "(14,+)"},"reset": ["c0"],"target": "l4"},
+		{"source": "l3","action": "b","guard": {"c0": "(9,+)","c1": "(2,+)"},"reset": ["c0","c1"],"target": "l1"},
+		{"source": "l4","action": "a","guard": {"c0": "[7,+)","c1": "(14,+)"},"reset": ["c0"],"target": "l5"},
+		{"source": "l4","action": "b","guard": {"c0": "(1,+)","c1": "(3,+)"},"reset": [],"target": "l0"},
+		{"source": "l5","action": "b","guard": {"c0": "[15,+)","c1": "(16,+)"},"reset": [],"target": "l6"},
+		{"source": "l6","action": "b","guard": {"c0": "(8,+)","c1": "[0,+)"},"reset": ["c0","c1"],"target": "l1"},
+		{"source": "l7","action": "a","guard": {"c0": "(1,+)","c1": "(3,+)"},"reset": ["c0","c1"],"target": "l5"},
+		{"source": "l7","action": "b","guard": {"c0": "[5,+)","c1": "(1,+)"},"reset": ["c0"],"target": "l0"}
+	],
+	"init_location" : "l0"
+}

@@ -1,0 +1,46 @@
+{
+	"name" : "6_1_8_2-9",
+	"clocks" : ["c0", "c1"],
+	"actions" : ["a"],
+	"locations" : [
+		{
+			"name": "l0",
+			"invariant": {},
+			"accepting": true
+		},
+		{
+			"name": "l1",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l2",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l3",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l4",
+			"invariant": {},
+			"accepting": false
+		},
+		{
+			"name": "l5",
+			"invariant": {},
+			"accepting": false
+		}
+	],
+	"transitions" : [
+		{"source": "l0","action": "a","guard": {"c0": "[4,+)","c1": "[2,+)"},"reset": [],"target": "l2"},
+		{"source": "l1","action": "a","guard": {"c0": "[1,+)","c1": "(8,+)"},"reset": ["c1"],"target": "l1"},
+		{"source": "l2","action": "a","guard": {"c0": "(5,+)","c1": "(5,+)"},"reset": ["c0"],"target": "l0"},
+		{"source": "l3","action": "a","guard": {"c0": "(1,+)","c1": "[2,+)"},"reset": ["c0","c1"],"target": "l1"},
+		{"source": "l4","action": "a","guard": {"c0": "(1,+)","c1": "(8,+)"},"reset": [],"target": "l2"},
+		{"source": "l5","action": "a","guard": {"c0": "(7,+)","c1": "[2,+)"},"reset": ["c0"],"target": "l1"}
+	],
+	"init_location" : "l0"
+}

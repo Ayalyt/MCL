@@ -1,0 +1,16 @@
+{
+	"name" : "temp1",
+	"clocks" : ["x"],
+	"actions" : ["a"],
+	"locations" : [
+		{
+			"name": "l0",
+			"invariant": {},
+			"accepting": true
+		}
+	],
+	"transitions" : [
+		{"source": "l0","action": "a","guard": {"x": "(1,+)"},"reset": ["x"],"target": "l0"}
+	],
+	"init_location" : "l0"
+}

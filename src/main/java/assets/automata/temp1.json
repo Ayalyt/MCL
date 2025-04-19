@@ -1,0 +1,36 @@
+{
+	"name" : "temp1",
+	"clocks" : ["x"],
+	"actions" : ["a", "b"],
+	"locations" : [
+		{
+			"name": "l0",
+			"invariant": {},
+			"accepting": true
+		},
+		{
+			"name": "l1",
+			"invariant": {},
+			"accepting": true
+		},
+		{
+			"name": "l2",
+			"invariant": {},
+			"accepting": true
+		},
+		{
+			"name": "l3",
+			"invariant": {},
+			"accepting": true
+		}
+	],
+	"transitions" : [
+		{"source": "l0","action": "b","guard": {"x": "[5,+)"},"reset": ["x"],"target": "l1"},
+		{"source": "l0","action": "a","guard": {"x": "[0,4)"},"reset": [],"target": "l2"},
+		{"source": "l1","action": "a","guard": {"x": "[7,+)"},"reset": ["x"],"target": "l3"},
+		{"source": "l2","action": "a","guard": {"x": "[3,+)"},"reset": [],"target": "l1"},
+		{"source": "l2","action": "b","guard": {"x": "[1,+)"},"reset": ["x"],"target": "l2"},
+		{"source": "l3","action": "b","guard": {"x": "[2,+)"},"reset": ["x"],"target": "l3"}
+	],
+	"init_location" : "l0"
+}
