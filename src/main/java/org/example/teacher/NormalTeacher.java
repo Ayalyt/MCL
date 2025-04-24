@@ -10,13 +10,21 @@ import java.util.Optional;
 public class NormalTeacher implements Teacher<DelayTimedWord>{
     @Getter
     private final DTA target;
-
     @Getter
     private final DTARuntime targetRuntime;
+    @Getter
+    private int numOfMq= 0;
+    @Getter
+    private int numOfEq = 0;
 
     public NormalTeacher(DTA target) {
         this.target = target;
         this.targetRuntime = new DTARuntime(this.target);
+    }
+
+    public NormalTeacher() {
+        target = null;
+        targetRuntime = null;
     }
 
     /**
@@ -25,6 +33,7 @@ public class NormalTeacher implements Teacher<DelayTimedWord>{
      */
     @Override
     public Boolean membershipQuery(DelayTimedWord word) {
+        numOfMq++;
         DTARuntime.AcceptResult result = targetRuntime.execute(word);
         return result.isAccepted();
     }
@@ -35,6 +44,7 @@ public class NormalTeacher implements Teacher<DelayTimedWord>{
      */
     @Override
     public Optional<DelayTimedWord> equivalenceQuery(DTA hypothesis) {
+        numOfEq++;
         return target.isEquivalent(hypothesis);
     }
 }

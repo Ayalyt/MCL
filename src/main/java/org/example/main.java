@@ -13,12 +13,16 @@ import java.util.Optional;
 public class main {
     public static void main(String[] args) {
         try {
-            DTA dta = Serializer.load("D:\\工作文件\\常用项目\\MCL\\src\\main\\java\\assets\\automata\\temp3.json");
+            Double time0 = System.currentTimeMillis() / 1000.0;
+            DTA dta = Serializer.load("D:\\工作文件\\常用项目\\MCL\\src\\main\\java\\assets\\automata\\temp4.json");
             NormalTeacher teacher = new NormalTeacher(dta);
             DTALearner learner = new DTALearner(dta.getAlphabet(), dta.getClocks().size(), teacher, dta.getConfiguration());
             DTA newDTA = learner.learn();
-            Optional<DelayTimedWord> temp = newDTA.findWitness(dta);
+            Double time1 = System.currentTimeMillis() / 1000.0;
             System.out.println(newDTA.toString());
+            System.out.println("成员查询次数：" + teacher.getNumOfMq());
+            System.out.println("等价查询次数：" + teacher.getNumOfEq());
+            System.out.println("学习时间：" + (time1 - time0) + "s");
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

@@ -7,6 +7,7 @@ import org.example.DBM;
 import org.example.constraint.AtomConstraint;
 import org.example.constraint.Constraint;
 import org.example.constraint.DisjunctiveConstraint;
+import org.example.constraint.ValidityStatus;
 import org.example.region.Region;
 
 import java.math.BigInteger;
@@ -49,7 +50,7 @@ public class Z3Converter {
     }
 
     public static BoolExpr disjunctiveConstraint2Boolexpr(DisjunctiveConstraint input, Context ctx, Map<Clock, RealExpr> clockVarMap) {
-        if (input.getConstraints().isEmpty()) {
+        if (input.getKnownStatus() == ValidityStatus.FALSE) {
             return ctx.mkFalse();
         }
         return ctx.mkOr(input.getConstraints().stream()
@@ -58,11 +59,7 @@ public class Z3Converter {
     }
 
     public static BoolExpr constraint2Boolexpr(Constraint input, Context ctx, Map<Clock, RealExpr> clockVarMap) {
-        if (Objects.equals(input, Constraint.falseConstraint(clockVarMap.keySet()))) {
-            return ctx.mkFalse();
-        }
-        // 处理TRUE常量（空约束集合）
-        if (Objects.equals(input, Constraint.trueConstraint(clockVarMap.keySet())) || input.getConstraints().isEmpty()) {
+        if (input.getKnownStatus() == ValidityStatus.TRUE) {
             return ctx.mkTrue();
         }
         // 将每个原子约束转换为Z3表达式
@@ -252,57 +249,142 @@ public class Z3Converter {
     }
 
     public static Constraint boolexpr2Constraint(BoolExpr input, Context ctx, Map<Clock, RealExpr> clockVarMap, Set<Clock> allClocks) {
-        if (input == null) {
-            throw new IllegalArgumentException("Z3Converter: 输入不能为空");
-        }
 
-        // 处理 True/False 特殊情况
-        if (input.isTrue()) {
-            return Constraint.trueConstraint(allClocks);
-        }
-        if (input.isFalse()) {
-            return Constraint.falseConstraint(allClocks);
-        }
+        Set<AtomConstraint> atoms = new HashSet<>();
+        Optimize optimizer = ctx.mkOptimize();
+        optimizer.Assert(input);
 
-        // 收集原子约束
-        Set<AtomConstraint> atomConstraints = new HashSet<>();
+        List<Clock> clocksList = new ArrayList<>(allClocks);
+        clocksList.remove(Clock.getZeroClock());
 
-        try {
-            // 如果是AND表达式，处理所有子表达式
-            if (input.isAnd()) {
-                for (Expr<?> expr : input.getArgs()) {
-                    if (expr instanceof BoolExpr) {
-                        AtomConstraint atom = boolexpr2AtomConstraint(
-                                (BoolExpr) expr, ctx, clockVarMap, allClocks);
-                        atomConstraints.add(atom);
+        // 1. 寻找每个时钟 ci 的上下界 (ci - x0)
+        for (Clock ci : clocksList) {
+            RealExpr ciVar = clockVarMap.get(ci);
+            if (ciVar == null) {
+                continue;
+            }
+
+            // 找上界 ci <= V
+            optimizer.Push();
+            // ****************************************************
+            // 修改点：获取 Handle 对象
+            Optimize.Handle<RealSort> maxHandle = optimizer.MkMaximize(ciVar);
+            // ****************************************************
+            Status status = optimizer.Check();
+            if (status == Status.SATISFIABLE) {
+                // ****************************************************
+                // 修改点：通过 Handle 获取上界
+                Expr<RealSort> upperBoundExpr = maxHandle.getUpper();
+                // ****************************************************
+                Rational upperBound = parseNumeral(upperBoundExpr);
+                if (upperBound != null) {
+                    optimizer.Push();
+                    optimizer.Assert(ctx.mkEq(ciVar, upperBoundExpr));
+                    boolean isNonStrict = (optimizer.Check() == Status.SATISFIABLE);
+                    optimizer.Pop();
+                    if (isNonStrict) {
+                        atoms.add(AtomConstraint.lessEqual(ci, Clock.getZeroClock(), upperBound));
+                    } else {
+                        atoms.add(AtomConstraint.lessThan(ci, Clock.getZeroClock(), upperBound));
                     }
                 }
             }
-            // 如果是单个原子约束
-            else {
-                AtomConstraint atom = boolexpr2AtomConstraint(
-                        input, ctx, clockVarMap, allClocks);
-                if (atom != null) {
-                    atomConstraints.add(atom);
-                } else {
-                    throw new IllegalArgumentException(
-                            "Z3Converter: 无法转换 " + input);
+            optimizer.Pop();
+
+            // 找下界 ci >= V
+            optimizer.Push();
+            // ****************************************************
+            // 修改点：获取 Handle 对象
+            Optimize.Handle<RealSort> minHandle = optimizer.MkMinimize(ciVar);
+            // ****************************************************
+            status = optimizer.Check();
+            if (status == Status.SATISFIABLE) {
+                // ****************************************************
+                // 修改点：通过 Handle 获取下界
+                Expr<RealSort> lowerBoundExpr = minHandle.getLower();
+                // ****************************************************
+                Rational lowerBound = parseNumeral(lowerBoundExpr);
+                if (lowerBound != null) {
+                    optimizer.Push();
+                    optimizer.Assert(ctx.mkEq(ciVar, lowerBoundExpr));
+                    boolean isNonStrict = (optimizer.Check() == Status.SATISFIABLE);
+                    optimizer.Pop();
+                    if (isNonStrict) {
+                        atoms.add(AtomConstraint.lessEqual(Clock.getZeroClock(), ci, lowerBound.negate()));
+                    } else {
+                        atoms.add(AtomConstraint.lessThan(Clock.getZeroClock(), ci, lowerBound.negate()));
+                    }
                 }
             }
-
-            // 如果没有收集到任何原子约束但输入不是 True/False，可能是转换错误
-            if (atomConstraints.isEmpty()) {
-                throw new IllegalArgumentException("Z3Converter: expr没有合法原子约束: " + input);
-            }
-
-            // 创建新的 Constraint 对象
-            return new Constraint(atomConstraints, allClocks);
-
-        } catch (Exception e) {
-            // 处理转换过程中的异常
-            throw new IllegalArgumentException(
-                    "Z3Converter: expr2constraint错误: " + e.getMessage(), e);
+            optimizer.Pop();
         }
+
+        // 2. 寻找每对时钟 ci - cj 的上下界
+        for (int i = 0; i < clocksList.size(); i++) {
+            for (int j = i + 1; j < clocksList.size(); j++) {
+                Clock ci = clocksList.get(i);
+                Clock cj = clocksList.get(j);
+                RealExpr ciVar = clockVarMap.get(ci);
+                RealExpr cjVar = clockVarMap.get(cj);
+                if (ciVar == null || cjVar == null) {
+                    continue;
+                }
+
+                ArithExpr<RealSort> diff = ctx.mkSub(ciVar, cjVar);
+
+                // 找上界 ci - cj <= V
+                optimizer.Push();
+                // ****************************************************
+                Optimize.Handle<RealSort> maxDiffHandle = optimizer.MkMaximize(diff);
+                // ****************************************************
+                Status status = optimizer.Check();
+                if (status == Status.SATISFIABLE) {
+                    // ****************************************************
+                    Expr<RealSort> upperBoundExpr = maxDiffHandle.getUpper();
+                    // ****************************************************
+                    Rational upperBound = parseNumeral(upperBoundExpr);
+                    if (upperBound != null) {
+                        optimizer.Push();
+                        optimizer.Assert(ctx.mkEq(diff, upperBoundExpr));
+                        boolean isNonStrict = (optimizer.Check() == Status.SATISFIABLE);
+                        optimizer.Pop();
+                        if (isNonStrict) {
+                            atoms.add(AtomConstraint.lessEqual(ci, cj, upperBound));
+                        } else {
+                            atoms.add(AtomConstraint.lessThan(ci, cj, upperBound));
+                        }
+                    }
+                }
+                optimizer.Pop();
+
+                // 找下界 ci - cj >= V
+                optimizer.Push();
+                // ****************************************************
+                Optimize.Handle<RealSort> minDiffHandle = optimizer.MkMinimize(diff);
+                // ****************************************************
+                status = optimizer.Check();
+                if (status == Status.SATISFIABLE) {
+                    // ****************************************************
+                    Expr<RealSort> lowerBoundExpr = minDiffHandle.getLower();
+                    // ****************************************************
+                    Rational lowerBound = parseNumeral(lowerBoundExpr);
+                    if (lowerBound != null) {
+                        optimizer.Push();
+                        optimizer.Assert(ctx.mkEq(diff, lowerBoundExpr));
+                        boolean isNonStrict = (optimizer.Check() == Status.SATISFIABLE);
+                        optimizer.Pop();
+                        if (isNonStrict) {
+                            atoms.add(AtomConstraint.lessEqual(cj, ci, lowerBound.negate()));
+                        } else {
+                            atoms.add(AtomConstraint.lessThan(cj, ci, lowerBound.negate()));
+                        }
+                    }
+                }
+                optimizer.Pop();
+            }
+        }
+
+        return new Constraint(atoms, allClocks);
     }
 
     public static AtomConstraint boolexpr2AtomConstraint(BoolExpr input, Context ctx, Map<Clock, RealExpr> clockVarMap, Set<Clock> allClocks) {
@@ -484,7 +566,6 @@ public class Z3Converter {
         return null;
     }
 
-    // 扩展 findClockForExpr 以处理零时钟的可能性
     private static Clock findClockForExpr(Expr<?> expr, Map<Clock, RealExpr> clockVarMap, boolean allowZero, Context ctx) {
         if (allowZero && expr.equals(ctx.mkReal(0))) {
             return Clock.getZeroClock();
@@ -500,8 +581,6 @@ public class Z3Converter {
         return null; // 未找到或不允许零时钟但匹配了零
     }
 
-
-    // 根据解析出的组件和操作符创建 AtomConstraint
     private static AtomConstraint createAtomConstraint(Clock c1, Clock c2, Operator op, Rational value, Expr<?> contextExpr) {
         return switch (op) {
             case LT -> AtomConstraint.lessThan(c1, c2, value);    // c1 - c2 < V
@@ -512,19 +591,6 @@ public class Z3Converter {
             case EQ, INVALID -> throw new IllegalArgumentException("Z3Converter: 无法为操作符 " + op + " 创建 AtomConstraint from " + contextExpr);
         };
     }
-    private static Clock findClockForExpr(Expr<?> expr, Map<Clock, RealExpr> clockVarMap) {
-        for (Map.Entry<Clock, RealExpr> entry : clockVarMap.entrySet()) {
-            if (entry.getValue().equals(expr)) {
-                return entry.getKey();
-            }
-        }
-        return null;
-    }
-
-    private static boolean isConstant(Expr<?> expr) {
-        return expr instanceof RatNum || expr instanceof IntNum;
-    }
-
 
     public static BoolExpr DBM2Boolexpr(DBM dbm, Context ctx, Map<Clock, RealExpr> clockVarMap) {
         Objects.requireNonNull(dbm, "DBM为null");

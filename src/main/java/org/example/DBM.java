@@ -7,6 +7,7 @@ import org.example.constraint.Constraint;
 import org.example.utils.Rational;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 
 public class DBM {
@@ -91,16 +92,18 @@ public class DBM {
 
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                if (i == j) {
-                    initialUpperBounds[i][j] = Rational.ZERO;
-                    initialClosed[i][j] = true;
-                } else if (i == 0) { // 处理第 0 行 (x0 - cj)
-                    initialUpperBounds[i][j] = Rational.ZERO; // x0 - cj <= 0 (cj >= 0)
-                    initialClosed[i][j] = true;
-                } else { // 处理 i > 0 的行
-                    initialUpperBounds[i][j] = Rational.INFINITY; // ci - cj < infinity (无上界)
-                    initialClosed[i][j] = false; // < inf
-                }
+//                if (i == j) {
+//                    initialUpperBounds[i][j] = Rational.ZERO;
+//                    initialClosed[i][j] = true;
+//                } else if (i == 0) { // 处理第 0 行 (x0 - cj)
+//                    initialUpperBounds[i][j] = Rational.ZERO; // x0 - cj <= 0 (cj >= 0)
+//                    initialClosed[i][j] = true;
+//                } else { // 处理 i > 0 的行
+//                    initialUpperBounds[i][j] = Rational.INFINITY; // ci - cj < infinity (无上界)
+//                    initialClosed[i][j] = false; // < inf
+//                }
+                initialUpperBounds[i][j] = Rational.ZERO;
+                initialClosed[i][j] = true;
             }
         }
         return new DBM(clockIndexMap, clockList, size, initialUpperBounds, initialClosed);
@@ -120,6 +123,10 @@ public class DBM {
      */
     public List<Clock> getClockList() {
         return Collections.unmodifiableList(clockList);
+    }
+
+    public Set<Clock> getClocks() {
+        return new HashSet<>(clockList);
     }
 
     /**

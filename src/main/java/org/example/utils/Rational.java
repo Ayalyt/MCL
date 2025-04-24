@@ -39,6 +39,7 @@ public final class Rational implements Comparable<Rational> {
     public static final Rational INFINITY = new Rational(BIG_INT_ONE, BIG_INT_ZERO);      // 1/0
     public static final Rational NEG_INFINITY = new Rational(BIG_INT_NEG_ONE, BIG_INT_ZERO); // -1/0
     public static final Rational NaN = new Rational(BIG_INT_ZERO, BIG_INT_ZERO);         // 0/0
+    public static final Rational EPSILON = new Rational(BigInteger.valueOf(1), BigInteger.valueOf(1000000));
 
     static {
         CACHE.put(ZERO.getCacheKey(), ZERO);
@@ -442,6 +443,19 @@ public final class Rational implements Comparable<Rational> {
             return this;
         }
         return this.negate();
+    }
+
+    public static Rational max(Rational a, Rational b) {
+        if (a.isNaN() || b.isNaN()) {
+            return NaN;
+        }
+        if (a.isInfinity() || b.isInfinity()) {
+            return a.isInfinity()? a : b;
+        }
+        if (a.isNegativeInfinity() || b.isNegativeInfinity()) {
+            return a.isNegativeInfinity()? b : a;
+        }
+        return a.compareTo(b) >= 0? a : b;
     }
 
     // ========== 并行流支持 ==========

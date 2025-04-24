@@ -15,6 +15,7 @@ public class Action implements Comparable<Action>{
     private final boolean isEpsilon;
     private final int index;
     private final String action;
+    private final int hash;
     @Setter
     private ResetClockTimedWord resetClockTimedWord = null; // 抽象动作标签
 
@@ -22,6 +23,7 @@ public class Action implements Comparable<Action>{
         this.index = index;
         this.action = action;
         this.isEpsilon = action == null || action.isEmpty();
+        this.hash = Objects.hash(action, isEpsilon);
     }
 
     public Action(Action action){
@@ -29,6 +31,7 @@ public class Action implements Comparable<Action>{
         this.index = action.index;
         this.action = action.action;
         this.resetClockTimedWord = action.resetClockTimedWord;
+        this.hash = Objects.hash(action, isEpsilon);
     }
 
     @Override
@@ -57,7 +60,7 @@ public class Action implements Comparable<Action>{
 
     @Override
     public int hashCode() {
-        return Objects.hash(action, isEpsilon);
+        return hash;
     }
 }
 

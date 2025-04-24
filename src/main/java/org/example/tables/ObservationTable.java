@@ -2,12 +2,15 @@ package org.example.tables;
 
 import com.microsoft.z3.*;
 import lombok.Getter;
+import org.apache.commons.lang3.RandomUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.example.*;
 import org.example.automata.DFA;
 import org.example.automata.DTA;
+import org.example.constraint.AtomConstraint;
 import org.example.constraint.Constraint;
+import org.example.constraint.DisjunctiveConstraint;
 import org.example.region.Region;
 import org.example.ClockConfiguration;
 import org.example.region.RegionSolver;
@@ -21,6 +24,7 @@ import org.example.words.ResetDelayTimedWord;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.random.RandomGenerator;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -38,7 +42,6 @@ public class ObservationTable implements Cloneable {
     private final Alphabet alphabet;
     private final Set<Clock> clocks;
     private final NormalTeacher normalTeacher;
-    private RegionSolver regionSolver = new RegionSolver();
     private final ClockConfiguration configuration;
     private int guessCount = 0;
 
@@ -161,7 +164,6 @@ public class ObservationTable implements Cloneable {
         for (InconsistencyRecord record : other.inconsistencyRecords) {
             this.inconsistencyRecords.add(new InconsistencyRecord(record));
         }
-        this.regionSolver = new RegionSolver();
     }
 
     public boolean isClosed() {
@@ -208,7 +210,7 @@ public class ObservationTable implements Cloneable {
             boolean foundEquivalentInS = S.stream()
                     .map(rowCache::get)
                     .filter(Objects::nonNull)
-                    .anyMatch(rowS -> rowS.equals(rowR));
+                    .anyMatch(rowS -> rowS != null && rowS.equals(rowR)); // 添加 null 检查
 
             if (!foundEquivalentInS) {
                 problematicR = r;
@@ -219,52 +221,80 @@ public class ObservationTable implements Cloneable {
         if (problematicR == null) {
             // 表在结构上已经封闭
             System.out.println("guessClosing: 表在结构上已经封闭。");
-            // 它可能仍需要填充，但那是 fillTable 的工作。
-            // 将当前状态作为此操作的唯一可能性返回。
-            return Collections.singletonList(new ObservationTable(this));
+            return Collections.singletonList(new ObservationTable(this)); // 返回当前表的副本
         }
 
         System.out.println("guessClosing: 找到非封闭的 R 元素: " + problematicR);
 
-        // 创建将 problematicR 移动到 S 的基础实例
         ObservationTable baseInstance = new ObservationTable(this);
         baseInstance.S.add(problematicR);
         baseInstance.R.remove(problematicR);
-        // 由于 S/R 结构发生变化，清除缓存
         baseInstance.rowCache.clear();
         baseInstance.lastActionCache.clear();
         baseInstance.lastRegionCache.clear();
 
         List<ObservationTable> finalTableInstances = new ArrayList<>();
-        List<Set<Clock>> allResetSubsets = generateAllSubsetsOfClocks();
+        List<Action> actions = new ArrayList<>(alphabet.alphabet.values());
+        List<Set<Clock>> allSingleActionResetSubsets = generateAllSubsetsOfClocks();
+        int numActions = actions.size();
+        int numResetOptions = allSingleActionResetSubsets.size(); // 2^|C|
 
-        // 对于移动的元素（现在在 S 中），为所有动作和重置猜测生成新的边界条目
-        for (Action action : alphabet.alphabet.values()) {
-            for (Set<Clock> resetGuess : allResetSubsets) {
-                // 为此特定动作/重置猜测组合创建新实例
-                ObservationTable specificInstance = new ObservationTable(baseInstance);
-                
-                ClockValuation zeroValuation = ClockValuation.zero(this.clocks); // 占位，后面fillTable算
-                ResetClockTimedWord newBoundaryEntry = problematicR.append(Triple.of(action, zeroValuation, resetGuess));
+        // 计算所有可能的完整重置猜测组合的数量
+        long totalCombinations = (long) Math.pow(numResetOptions, numActions);
+        if (totalCombinations > 10000) {
+            System.err.println("警告: 重置组合数量巨大 (" + totalCombinations + ")。");
+        }
 
-                // 将新字添加到 R 中，仅当它不在 S 中时（不太可能但可能）
+
+        int[] currentCombinationIndices = new int[numActions];
+
+        for (long i = 0; i < totalCombinations; i++) {
+            ObservationTable specificInstance = new ObservationTable(baseInstance);
+            specificInstance.guessCount++; // 增加猜测计数
+
+            StringBuilder combinationDesc = new StringBuilder("(");
+
+            for (int actionIndex = 0; actionIndex < numActions; actionIndex++) {
+                Action currentAction = actions.get(actionIndex);
+                // 从当前组合索引确定此动作的重置猜测
+                int resetIndex = currentCombinationIndices[actionIndex];
+                Set<Clock> currentResetGuess = allSingleActionResetSubsets.get(resetIndex);
+
+                combinationDesc.append(currentAction.getAction()).append(":").append(currentResetGuess).append(actionIndex == numActions - 1 ? "" : ", ");
+
+                ClockValuation zeroValuation = ClockValuation.zero(this.clocks);
+                ResetClockTimedWord newBoundaryEntry = problematicR.append(Triple.of(currentAction, zeroValuation, currentResetGuess));
+
                 if (!specificInstance.S.contains(newBoundaryEntry)) {
-                    if (!specificInstance.R.contains(newBoundaryEntry)) { // 如果循环生成相同字，避免在 R 中重复
-                        specificInstance.R.add(newBoundaryEntry);
-                        System.out.println("guessClosing: 向 R 添加新的边界条目: " + newBoundaryEntry);
-                    }
+                    specificInstance.R.add(newBoundaryEntry);
                 }
+            }
+            combinationDesc.append(")");
+            System.out.println("guessClosing: 创建实例，猜测组合: " + combinationDesc);
+            System.out.println("guessClosing: 实例 R 集合: " + specificInstance.R);
 
-                System.out.println("guessClosing: 为具有新边界的实例调用 fillTable: " + newBoundaryEntry);
-                List<ObservationTable> filledInstances = specificInstance.fillTable();
-                finalTableInstances.addAll(filledInstances);
+
+            System.out.println("guessClosing: 为具有完整新边界的实例调用 fillTable");
+            // fillTable 负责计算新 R 行的 f 和 g 值 (可能涉及 MQ 和进一步猜测)
+            List<ObservationTable> filledInstances = specificInstance.fillTable();
+            finalTableInstances.addAll(filledInstances);
+
+            // 更新到下一个组合索引
+            int actionToIncrement = numActions - 1;
+            while (actionToIncrement >= 0) {
+                currentCombinationIndices[actionToIncrement]++;
+                if (currentCombinationIndices[actionToIncrement] == numResetOptions) {
+                    currentCombinationIndices[actionToIncrement] = 0;
+                    actionToIncrement--; // 进位
+                } else {
+                    break;
+                }
             }
         }
 
-        System.out.println("guessClosing: 完成。生成了 " + finalTableInstances.size() + " 个潜在的表实例。");
+        System.out.println("guessClosing: 完成。生成了 " + finalTableInstances.size() + " 个最终的表实例。");
         return finalTableInstances;
     }
-
 
     public boolean isConsistent() {
         return isConsistent(true);
@@ -426,6 +456,7 @@ public class ObservationTable implements Cloneable {
             System.out.println("guessConsistency: 向 E 添加新后缀: " + newSuffixEPrime);
         } else {
             System.out.println("guessConsistency: 后缀 " + newSuffixEPrime + " 已存在于 E 中。");
+            return new ArrayList<>();
         }
         baseTable.inconsistencyRecords.clear(); // 清除旧记录
 
@@ -493,12 +524,12 @@ public class ObservationTable implements Cloneable {
                     try {
                         // 尝试填充 f 值，如果键不存在
                         f.putIfAbsent(key, normalTeacher.membershipQuery(prefix.toResetDelayTimedWord(this.clocks).toDelayTimedWord()));
+
                         // 尝试填充 g 值，如果键不存在
                         g.putIfAbsent(key, Collections.emptyList());
                     } catch (Exception e) {
                         // 捕获成员查询或转换中可能出现的任何异常
-                        System.err.println("fillTable 错误: 处理空后缀 (" + prefix + ", " + suffix + ") 时出错: " + e.getMessage());
-                        // 根据错误性质决定是否继续或抛出异常，这里选择继续处理其他条目
+                        System.err.println("fillTable: 处理空后缀 (" + prefix + ", " + suffix + ") 时无有效延迟，已放弃当前实例: " + e.getMessage());
                     }
                     continue; // 继续处理下一个后缀
                 }
@@ -561,13 +592,11 @@ public class ObservationTable implements Cloneable {
                 // 迭代器为空，表示这条路径上的所有初始待填充条目都已被处理
                 System.out.println("fillTable: 完成一个表实例的填充路径 (猜测计数=" + currentTableState.guessCount + ")。");
                 try {
-                    // --- 调试验证（可选但推荐）---
                     boolean allEntriesPresent = true;
                     for (Pair<ResetClockTimedWord, RegionTimedWord> expectedKey : initialEntriesToFillSet) {
                         if (!currentTableState.f.containsKey(expectedKey) || !currentTableState.g.containsKey(expectedKey)) {
                             System.err.println("fillTable 内部错误: 完成路径但缺少条目: " + expectedKey + " in table hash: " + System.identityHashCode(currentTableState));
                             allEntriesPresent = false;
-                            // 不建议在此处中断，先记录问题
                         }
                     }
                     if (!allEntriesPresent) {
@@ -575,11 +604,7 @@ public class ObservationTable implements Cloneable {
                         // 可以选择跳过这个不完整的实例: continue;
                         // 或者仍然尝试构建缓存并添加，但已知其可能不完整
                     }
-                    // --- 验证结束 ---
-
-                    // 为这个完成填充的表实例构建缓存
                     currentTableState.buildCaches();
-                    // 将这个代表一种完整填充结果的表实例加入最终结果列表
                     completedTables.add(currentTableState);
                 } catch (Exception e) {
                     // 捕获构建缓存或添加结果时发生的错误
@@ -655,7 +680,7 @@ public class ObservationTable implements Cloneable {
                 try {
                     // a. 验证猜测有效性：尝试转换区域后缀为重置时钟后缀
                     suffixWord = suffix_e.toResetClockTimedWord(
-                            guessedResetSequence, startValuationForSuffix, this.clocks, this.configuration, this.regionSolver);
+                            guessedResetSequence, startValuationForSuffix, this.clocks, this.configuration);
 
                     if (suffixWord != null) { // 猜测导致了有效的时间字序列
                         validGuessesForEntry.incrementAndGet(); // 增加有效猜测计数
@@ -687,12 +712,11 @@ public class ObservationTable implements Cloneable {
                         // f. 入队：将新状态（副本+新迭代器）加入队列，继续下一层探索
                         queue.add(Pair.of(branchSpecificRemainingItems.iterator(), nextTableState));
 
-                    } else {
-                        // 猜测无效 (toResetClockTimedWord 返回 null)，放弃此路径，不执行任何操作，继续下一个猜测
-                    }
+                    }  // 猜测无效 (toResetClockTimedWord 返回 null)，放弃此路径，不执行任何操作，继续下一个猜测
+
 
                 } catch (Exception e) {
-                    System.err.println("fillTable 错误: 处理猜测序列时出错 (" + prefix + ", " + suffix_e + ", guess: " + guessedResetSequence + "): " + e.getMessage());
+                    System.err.println("fillTable 警告: 处理猜测序列时出错，无合法后缀。已放弃路径。 (" + prefix + ", " + suffix_e + ", guess: " + guessedResetSequence + "): " + e.getMessage());
                 }
             } // 结束对当前条目所有猜测的循环
 
@@ -838,36 +862,36 @@ public class ObservationTable implements Cloneable {
         // --- 1. 找到最长匹配前缀 yr ---
         ResetClockTimedWord longestMatchingPrefix = ResetClockTimedWord.EMPTY;
         int matchLength = 0; // 匹配的 ResetClockTimedWord 的长度
-
-        Set<ResetClockTimedWord> sUnionR = new HashSet<>(S);
-        sUnionR.addAll(R);
-
-        for (ResetClockTimedWord yr : sUnionR) {
-            if (yr.isEmpty()) {
-                continue;
-            }
-            List<Action> yrActions = yr.getAction();
-            List<Action> cexActions = cex.getAction();
-
-            if (cexActions.size() >= yrActions.size()) {
-                boolean actionMatch = true;
-                for (int i = 0; i < yrActions.size(); i++) {
-                    if (!yrActions.get(i).equals(cexActions.get(i))) {
-                        actionMatch = false;
-                        break;
-                    }
-                }
-                if (actionMatch) {
-                    // 如果动作序列匹配，我们选择最长的那个
-                    // TODO: 未来可以考虑更强的匹配检查，例如时间上的可达性，但这会显著增加复杂性
-                    if (yr.length() > longestMatchingPrefix.length()) {
-                        longestMatchingPrefix = yr;
-                        matchLength = yr.length();
-                    }
-                }
-            }
-        }
-        System.out.println("找到最长匹配前缀 yr (长度 " + matchLength + "): " + longestMatchingPrefix);
+// 全部进行猜测
+//        Set<ResetClockTimedWord> sUnionR = new HashSet<>(S);
+//        sUnionR.addAll(R);
+//
+//        for (ResetClockTimedWord yr : sUnionR) {
+//            if (yr.isEmpty()) {
+//                continue;
+//            }
+//            List<Action> yrActions = yr.getAction();
+//            List<Action> cexActions = cex.getAction();
+//
+//            if (cexActions.size() >= yrActions.size()) {
+//                boolean actionMatch = true;
+//                for (int i = 0; i < yrActions.size(); i++) {
+//                    if (!yrActions.get(i).equals(cexActions.get(i))) {
+//                        actionMatch = false;
+//                        break;
+//                    }
+//                }
+//                if (actionMatch) {
+//                    // 如果动作序列匹配，我们选择最长的那个
+//                    // TODO: 未来可以考虑更强的匹配检查，例如时间上的可达性，但这会显著增加复杂性
+//                    if (yr.length() > longestMatchingPrefix.length()) {
+//                        longestMatchingPrefix = yr;
+//                        matchLength = yr.length();
+//                    }
+//                }
+//            }
+//        }
+//        System.out.println("找到最长匹配前缀 yr (长度 " + matchLength + "): " + longestMatchingPrefix);
 
         // --- 2. 确定需要猜测重置的剩余部分 ---
         List<Pair<Action, Rational>> remainingCexActions = cex.getTimedActions().subList(matchLength, cex.length());
@@ -976,6 +1000,7 @@ public class ObservationTable implements Cloneable {
         System.out.println("processCounterexample 完成。总共生成了 " + resultingTables.size() + " 个新表实例。");
         return resultingTables;
     }
+
     /* ------------------------ 自动机构建 ---------------------------- */
 
     /**
@@ -1161,7 +1186,7 @@ public class ObservationTable implements Cloneable {
 
                 // 4. 分区, Partition Function P(Psi_l_sigma)
                 // partitionFunction 返回一个映射： valuation -> disjoint constraint Ii
-                Map<ClockValuation, Constraint> partitionResult = partitionFunction(Psi_l_sigma, clocks, configuration);
+                Map<ClockValuation, DisjunctiveConstraint> partitionResult = partitionFunction(Psi_l_sigma);
 
                 // 5. 添加 DTA 转移
                 for (Map.Entry<ClockValuation, Pair<ResetClockTimedWord, Location>> entry : transitionInfoMap.entrySet()) {
@@ -1176,18 +1201,23 @@ public class ObservationTable implements Cloneable {
                     }
 
                     // 从分区结果获取对应的约束 Ii
-                    Constraint guard = partitionResult.get(vi);
-                    if (guard == null) {
-                        System.err.println("DTA: 分区失败: " + vi);
-                        continue; // 或者抛出异常
+                    DisjunctiveConstraint partition = partitionResult.get(vi);
+                    if (partition == null || partition.isFalse()) {
+                        continue; // 不为 False 分区创建转移
                     }
 
-                    // 从 sigma_r 获取重置集合 B
                     Set<Clock> resets = sigma_r.getLastResets();
 
-                    // 创建并添加 DTA 转移
-                    Transition dtaTransition = new Transition(dtaSourceLoc, sigma, guard, resets, dtaTargetLoc);
-                    targetDTA.addTransition(dtaTransition);
+                    for (Constraint guard : partition.getConstraints()) {
+                        if (guard == null || guard.isFalse()) {
+                            continue;
+                        }
+
+                        Constraint final_guard = guard; // 假设暂时不需要替换
+
+                        Transition dtaTransition = new Transition(dtaSourceLoc, sigma, final_guard, resets, dtaTargetLoc);
+                        targetDTA.addTransition(dtaTransition);
+                    }
                 }
             }
         }
@@ -1202,187 +1232,195 @@ public class ObservationTable implements Cloneable {
      * 实现定义4.6中的分区函数 P(·),使用Z3求解器
      *
      * @param valuations 时钟赋值列表 Psi_l_sigma
-     * @param clocks 系统时钟集合
-     * @param config 区域配置(用于 kappa 和区域计算)
      * @return 从每个输入赋值 vi 到其不相交分区约束 Ii 的映射
      * @throws Z3Exception 如果Z3操作出错
      */
-    private Map<ClockValuation, Constraint> partitionFunction(
-            List<ClockValuation> valuations,
-            Set<Clock> clocks,
-            ClockConfiguration config) throws Z3Exception {
-
-        // 存储结果的映射
-        Map<ClockValuation, Constraint> result = new HashMap<>();
+    private Map<ClockValuation, DisjunctiveConstraint> partitionFunction(List<ClockValuation> valuations) {
+        System.out.println("时钟上界配置：" + configuration.getClockKappas());
+        valuations.sort(ClockValuation::compareTo);
+        System.out.println("时钟解释列表：" + valuations);
+        Map<ClockValuation, DisjunctiveConstraint> result = new HashMap<>();
         if (valuations == null || valuations.isEmpty()) {
             return result;
         }
 
         int n = valuations.size();
-        // 复制valuations列表作为 v1,...,vn
-        List<ClockValuation> V = new ArrayList<>(valuations);
-        // 获取每个时钟的最大常数
-        Map<Clock, Integer> kappa = config.getClockKappas();
+        List<ClockValuation> V = new ArrayList<>(valuations); // v1,...,vn
+        Map<Clock, Integer> kappa = configuration.getClockKappas();
 
-        // 使用try-with-resources自动管理Z3上下文
-        try (Context ctx = new Context()) {
-            Solver solver = ctx.mkSolver();
-            // 为每个时钟创建Z3变量
-            Map<Clock, RealExpr> clockVarMap = DTARuntimeContext.getVarMap(clocks, ctx);
+        Constraint nonNegativeConstraint = Constraint.trueConstraint(clocks);
 
-            List<BoolExpr> nonNegativeConstraints = new ArrayList<>();
-            for (Clock clock : clocks) {
-                if (!clock.isZeroClock()) {
-                    RealExpr clockVar = clockVarMap.get(clock);
-                    if (clockVar != null) {
-                        nonNegativeConstraints.add(ctx.mkGe(clockVar, ctx.mkReal(0)));
-                    }
+        List<Constraint> A_constraints = new ArrayList<>(n);          // A1,...,An (Constraint)
+        List<Constraint> U_constraints = new ArrayList<>(n);          // U1,...,Un (Constraint)
+        List<DisjunctiveConstraint> W_constraints = new ArrayList<>(n); // W1,...,Wn (DisjunctiveConstraint)
+        List<DisjunctiveConstraint> I_constraints = new ArrayList<>(n); // I1,...,In (DisjunctiveConstraint)
+
+        DisjunctiveConstraint Uo = DisjunctiveConstraint.falseConstraint(clocks);
+        for (int i = 0; i < n; i++) {
+            ClockValuation vi = V.get(i);
+
+            boolean exceedsCeiling = false;
+            for (Clock clock_j : clocks) {
+                Rational vij = vi.getValue(clock_j);
+                int ceiling_j = configuration.getClockKappa(clock_j);
+                if (vij.compareTo(Rational.valueOf(ceiling_j)) > 0) {
+                    exceedsCeiling = true;
+                    break;
                 }
             }
-            BoolExpr nonNegativeExpr = ctx.mkTrue(); // 默认为 True
-            if (!nonNegativeConstraints.isEmpty()) {
-                nonNegativeExpr = ctx.mkAnd(nonNegativeConstraints.toArray(new BoolExpr[0]));
+
+            Constraint Ai;
+            if (exceedsCeiling) {
+                Region region_vi = vi.toRegion(configuration);
+                Ai = region_vi.toConstraint(false); // Ai = [vi]
+            } else {
+                Ai = Constraint.falseConstraint(clocks); // Ai = ∅
             }
+            Uo = Uo.or(Ai);
+            A_constraints.add(Ai);
+        }
 
-            List<BoolExpr> A_expr = new ArrayList<>(n); // A1,...,An
-            List<BoolExpr> U_expr = new ArrayList<>(n); // U1,...,Un
-            List<BoolExpr> W_expr = new ArrayList<>(n); // W1,...,Wn
-            List<BoolExpr> I_expr = new ArrayList<>(n); // I1,...,In
 
-            // --- 第1步: 计算Ai和Uo---
-            List<BoolExpr> Uo_disjuncts = new ArrayList<>();
-            for (int i = 0; i < n; i++) {
-                ClockValuation vi = V.get(i);
-                boolean exceedsKappa = false;
-                // 检查是否有时钟值超过kappa
-                for (Clock c : clocks) {
-                    if (vi.getValue(c).compareTo(Rational.valueOf(kappa.getOrDefault(c, 0))) > 0) {
-                        exceedsKappa = true;
-                        break;
-                    }
-                }
+        System.out.println("--- A_constraints (Region Constraints) ---");
+        for (int i = 0; i < n; i++) {
+            System.out.println("A[" + i + "] for v" + i + " (" + V.get(i) + "): " + A_constraints.get(i));
+        }
+        System.out.println("----------------------------------------");
 
-                BoolExpr Ai;
-                if (exceedsKappa) {
-                    Region region_vi = vi.toRegion(config);
-                    Ai = Z3Converter.region2Boolexpr(region_vi, ctx, clockVarMap);
-                    Uo_disjuncts.add(Ai); // 将非平凡的Ai添加到Uo
+        for (int i = 0; i < n; i++) {
+            ClockValuation vi = V.get(i);
+            Constraint Ui = Constraint.trueConstraint(clocks);
+            for (Clock c : clocks) {
+                Rational val_ic = vi.getValue(c); // 获取 v_ij
+
+                // 检查 val_ic 是否为整数
+                if (val_ic.isInteger()) {
+                    // Case 1: v_ij 是整数
+                    Ui = Ui.and(AtomConstraint.greaterEqual(c, val_ic)); // cj >= v_ij
                 } else {
-                    Ai = ctx.mkTrue(); // Ai = 0 对应True约束
+                    // Case 2: v_ij 不是整数
+                    Rational floor_val = Rational.valueOf(val_ic.intValue()); // 获取 ⌊v_ij⌋
+                    Ui = Ui.and(AtomConstraint.greaterThan(c, floor_val)); // cj > ⌊v_ij⌋
                 }
-                A_expr.add(Ai);
             }
-            // 构造并简化Uo表达式
-            BoolExpr Uo_expr = ctx.mkOr(Uo_disjuncts.toArray(new BoolExpr[0]));
-            Uo_expr = (BoolExpr) Uo_expr.simplify();
+            U_constraints.add(Ui);
+        }
 
-            // --- 第2步: 计算Ui表达式 ---
-            for (int i = 0; i < n; i++) {
-                ClockValuation vi = V.get(i);
-                List<BoolExpr> ui_conjuncts = new ArrayList<>();
-                for (Clock c : clocks) {
-                    RealExpr clockVar = clockVarMap.get(c);
-                    Rational val_ic = vi.getValue(c);
-                    if (val_ic.isInteger()) { // 整数
-                        // cj >= vi,j
-                        ui_conjuncts.add(ctx.mkGe(clockVar, Z3Converter.rational2Ratnum(val_ic, ctx)));
-                    } else {
-                        // cj > floor(vi,j)
-                        Rational floor_val = Rational.valueOf(val_ic.intValue());
-                        ui_conjuncts.add(ctx.mkGt(clockVar, Z3Converter.rational2Ratnum(floor_val, ctx)));
-                    }
+        System.out.println("--- U_constraints (Unit Cube Constraints) ---");
+        for (int i = 0; i < n; i++) {
+            System.out.println("U[" + i + "] for v" + i + " (" + V.get(i) + "): " + U_constraints.get(i));
+        }
+        System.out.println("-------------------------------------------");
+
+        DisjunctiveConstraint accumulatedWUnionUo = Uo;
+        for (int i = 0; i < n; ++i) {
+            W_constraints.add(null);
+        }
+
+        for (int i = n - 1; i >= 0; i--) {
+            Constraint Ui = U_constraints.get(i);
+
+            DisjunctiveConstraint negatedAccumulated;
+            List<Constraint> accumulatedConstraints = accumulatedWUnionUo.getConstraints().stream().toList();
+            if (accumulatedConstraints.isEmpty()) {
+                negatedAccumulated = DisjunctiveConstraint.trueConstraint(clocks);
+            } else {
+                negatedAccumulated = accumulatedConstraints.get(0).negate();
+                for (int k = 1; k < accumulatedConstraints.size(); k++) {
+                    DisjunctiveConstraint negAccK = accumulatedConstraints.get(k).negate();
+                    negatedAccumulated = negatedAccumulated.and(negAccK);
                 }
-                BoolExpr Ui = ctx.mkAnd(ui_conjuncts.toArray(new BoolExpr[0]));
-                U_expr.add((BoolExpr) Ui.simplify());
             }
 
-            // --- 第3步: 从后向前计算Wi ---
-            BoolExpr accumulatedWUnionUoExpr = Uo_expr; // 从Uo开始
-            for(int i=0; i<n; ++i) {
-                W_expr.add(null);
-            }
+            DisjunctiveConstraint Wi = negatedAccumulated.and(Ui);
 
-            for (int i = n - 1; i >= 0; i--) {
-                BoolExpr Ui = U_expr.get(i);
-                // Wi = Ui AND NOT(accumulatedWUnionUoExpr)
-                BoolExpr negatedAccumulated = ctx.mkNot(accumulatedWUnionUoExpr);
-                BoolExpr Wi = ctx.mkAnd(Ui, negatedAccumulated);
-                Wi = (BoolExpr) Wi.simplify();
-                W_expr.set(i, Wi);
+            W_constraints.set(i, Wi);
+            accumulatedWUnionUo = accumulatedWUnionUo.or(Wi);
+        }
 
-                // 更新累积
-                accumulatedWUnionUoExpr = ctx.mkOr(Wi, accumulatedWUnionUoExpr);
-                accumulatedWUnionUoExpr = (BoolExpr) accumulatedWUnionUoExpr.simplify();
-            }
+        System.out.println("--- W_constraints (Partitioning Constraints) ---");
+        for (int i = 0; i < n; i++) {
+            System.out.println("W[" + i + "] for v" + i + " (" + V.get(i) + "): " + W_constraints.get(i));
+        }
+        System.out.println("----------------------------------------------");
 
-            // --- 第4步: 计算Ii ---
-            for(int i=0; i<n; ++i) {
-                I_expr.add(null);
-            }
+        for (int i = 0; i < n; ++i) {
+            I_constraints.add(null); // 占位
+        }
+        for (int i = 0; i < n; i++) {
+            DisjunctiveConstraint Wi = W_constraints.get(i);
+            Constraint Ai = A_constraints.get(i);
+
+            // or_Wi_Ai = Wi OR Ai
+            DisjunctiveConstraint or_Wi_Ai = Wi.or(Ai);
+
+            DisjunctiveConstraint Ii = or_Wi_Ai.and(nonNegativeConstraint);
+
+            I_constraints.set(i, Ii);
+        }
+
+        System.out.println("--- Initial I_constraints (Intersection Constraints) ---");
+        for (int i = 0; i < n; i++) {
+            System.out.println("Initial I[" + i + "] for v" + i + " (" + V.get(i) + "): " + I_constraints.get(i));
+        }
+        System.out.println("------------------------------------------------------");
+
+        boolean changed;
+        do {
+            changed = false;
             for (int i = 0; i < n; i++) {
-                BoolExpr Wi = W_expr.get(i);
-                BoolExpr Ai = A_expr.get(i);
-                BoolExpr Ii = ctx.mkAnd(Wi, Ai, nonNegativeExpr);
-                I_expr.set(i, (BoolExpr) Ii.simplify());
-            }
+                for (int j = i + 1; j < n; j++) {
+                    if (A_constraints.get(i).isTrue() && A_constraints.get(j).isTrue()) {
 
-            // --- 第5步: 细化处理 ---
-            boolean changed;
-            do {
-                changed = false;
-                for (int i = 0; i < n; i++) {
-                    for (int j = i + 1; j < n; j++) {
-                        // 检查条件: Ai=True, Aj=True, Ui等价, [vi] != [vj]
-                        boolean ai_is_true = A_expr.get(i).isTrue();
-                        boolean aj_is_true = A_expr.get(j).isTrue();
+                        if (U_constraints.get(i).equals(U_constraints.get(j))) {
 
-                        if (ai_is_true && aj_is_true) {
-                            // 检查Ui等价性
-                            if (areZ3ExprsEquivalent(U_expr.get(i), U_expr.get(j), ctx, solver)) {
-                                Region region_i = V.get(i).toRegion(config);
-                                Region region_j = V.get(j).toRegion(config);
+                            Region region_i = V.get(i).toRegion(configuration);
+                            Region region_j = V.get(j).toRegion(configuration);
 
-                                // 检查区域是否不同
-                                if (!region_i.equals(region_j)) {
-                                    // 检查当前Ii和Ij是否等价
-                                    if (areZ3ExprsEquivalent(I_expr.get(i), I_expr.get(j), ctx, solver)) {
-                                        BoolExpr region_i_expr = Z3Converter.region2Boolexpr(region_i, ctx, clockVarMap);
-                                        BoolExpr region_j_expr = Z3Converter.region2Boolexpr(region_j, ctx, clockVarMap);
+                            if (!region_i.equals(region_j)) {
 
-                                        // I_i' = I_i AND [v_i]
-                                        BoolExpr new_Ii = ctx.mkAnd(I_expr.get(i), region_i_expr);
-                                        I_expr.set(i, (BoolExpr) new_Ii.simplify());
+                                if (I_constraints.get(i).equals(I_constraints.get(j))) {
 
-                                        // I_j' = I_j AND [v_j]
-                                        BoolExpr new_Ij = ctx.mkAnd(I_expr.get(j), region_j_expr);
-                                        I_expr.set(j, (BoolExpr) new_Ij.simplify());
+                                    Constraint region_i_constraint = region_i.toConstraint(true);
+                                    Constraint region_j_constraint = region_j.toConstraint(true);
 
-                                        changed = true;
-                                    }
+                                    DisjunctiveConstraint current_Ii = I_constraints.get(i);
+                                    DisjunctiveConstraint new_Ii = current_Ii.and(region_i_constraint);
+                                    I_constraints.set(i, new_Ii);
+
+                                    DisjunctiveConstraint current_Ij = I_constraints.get(j);
+                                    DisjunctiveConstraint new_Ij = current_Ij.and(region_j_constraint); // AND(Constraint, Disjunctive)
+                                    I_constraints.set(j, new_Ij);
+
+                                    changed = true;
                                 }
                             }
                         }
                     }
                 }
-            } while (changed);
-
-            solver.push();
-            for (int i = 0; i < n; i++) {
-                BoolExpr final_Ii_expr = I_expr.get(i);
-                solver.add(final_Ii_expr);
-                if (solver.check() == Status.SATISFIABLE) {
-                    // 只有可满足的才转换
-                    Constraint final_Ii_constraint = Z3Converter.boolexpr2Constraint(final_Ii_expr, ctx, clockVarMap, clocks);
-                    result.put(V.get(i), final_Ii_constraint);
-                } else {
-                    // 如果不可满足，放入 False Constraint
-                    result.put(V.get(i), Constraint.falseConstraint(clocks));
-                }
             }
-            solver.pop();
+        } while (changed);
 
+        System.out.println("--- Final I_constraints (After Refinement) ---");
+        for (int i = 0; i < n; i++) {
+            System.out.println("Final I[" + i + "] for v" + i + " (" + V.get(i) + "): " + I_constraints.get(i));
         }
+        System.out.println("----------------------------------------------");
 
+        for (int i = 0; i < n; i++) {
+            DisjunctiveConstraint final_Ii = I_constraints.get(i).simplify();
+
+             if (final_Ii.isFalse()) {
+                 result.put(V.get(i), DisjunctiveConstraint.falseConstraint(clocks));
+             } else {
+                 result.put(V.get(i), final_Ii);
+             }
+            result.put(V.get(i), final_Ii);
+        }
+        System.out.println("--- Final Partition Results ---");
+        for (Map.Entry<ClockValuation, DisjunctiveConstraint> entry : result.entrySet()) {
+            System.out.println("Partition for " + entry.getKey() + ": " + entry.getValue());
+        }
         return result;
     }
 
@@ -1571,14 +1609,182 @@ public class ObservationTable implements Cloneable {
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Alphabet: ").append(alphabet).append("\n");
-        sb.append("Clocks: ").append(clocks).append("\n");
-        sb.append("S: ").append(S).append("\n");
-        sb.append("R: ").append(R).append("\n");
-        sb.append("E: ").append(E).append("\n");
-        sb.append("f: ").append(f).append("\n");
-        sb.append("g: ").append(g).append("\n");
-        sb.append("rowCache: ").append(rowCache).append("\n");
+        int maxWordLength = 80; // 限制输出中单词的长度，避免过宽
+
+        // --- 元数据 ---
+        sb.append("========== 观察表摘要 ==========\n");
+        sb.append("字母表 (Alphabet): ").append(alphabet.getAlphabet()).append("\n"); // 假设 Alphabet 有 getActions() 或类似方法
+        List<String> clockNames = clocks.stream()
+                .map(Clock::getName) // 假设 Clock 有 getName()
+                .sorted()
+                .collect(Collectors.toList());
+        sb.append("时钟 (Clocks): ").append(clockNames).append(" (数量: ").append(clocks.size()).append(")\n");
+        // 如果需要，可以有选择地添加配置细节，保持简洁
+        // sb.append("配置 (Configuration): ").append(configuration.toString()).append("\n");
+        sb.append("猜测次数 (Guess Count): ").append(guessCount).append("\n");
+
+        // --- 维度 ---
+        sb.append("\n--- 维度 ---\n");
+        sb.append("S (前缀集): ").append(S.size()).append(" 个元素\n");
+        sb.append("R (边界集): ").append(R.size()).append(" 个元素\n");
+        sb.append("E (后缀集): ").append(E.size()).append(" 个元素\n");
+
+        // --- 表格内容 (格式化) ---
+        sb.append("\n--- 表格内容 (|S U R| x |E|) ---\n");
+
+        // 为了输出一致性，对 S, R, E 进行排序 (可选，但有帮助)
+        List<ResetClockTimedWord> sortedS = S.stream().sorted(Comparator.comparing(Object::toString)).collect(Collectors.toList());
+        List<ResetClockTimedWord> sortedR = R.stream().sorted(Comparator.comparing(Object::toString)).collect(Collectors.toList());
+        List<RegionTimedWord> sortedE = E.stream().sorted(Comparator.comparing(Object::toString)).collect(Collectors.toList());
+
+        // 合并 S 和 R 作为行
+        List<ResetClockTimedWord> allPrefixes = new ArrayList<>(sortedS);
+        allPrefixes.addAll(sortedR);
+
+        // 确定列宽
+        int firstColWidth = 0;
+        for (ResetClockTimedWord prefix : allPrefixes) {
+            firstColWidth = Math.max(firstColWidth, truncate(prefix.toString(), maxWordLength).length());
+        }
+        firstColWidth += 5; // 为 "(S) " 或 "(R) " 标记增加空间
+
+        List<Integer> dataColWidths = new ArrayList<>();
+        for (RegionTimedWord suffix : sortedE) {
+            // 估算宽度: "f=T/F, g={c1,c2,...}" + 填充
+            int headerWidth = truncate(suffix.toString(), maxWordLength).length();
+            // 估算典型单元格内容宽度 (根据需要调整)
+            // "f=T, g={c1, c2}" -> 5 + 4 + 时钟数 * (名字长度+2)
+            int typicalCellWidth = 5 + 4 + clockNames.size() * 4; // 粗略估计
+            dataColWidths.add(Math.max(headerWidth, typicalCellWidth) + 2); // 增加内边距
+        }
+
+        // 打印表头行
+        sb.append(String.format("%-" + firstColWidth + "s", "前缀 (Prefix)"));
+        for (int i = 0; i < sortedE.size(); i++) {
+            String suffixHeader = truncate(sortedE.get(i).toString(), maxWordLength);
+            sb.append("| ").append(String.format("%-" + (dataColWidths.get(i) - 2) + "s", suffixHeader));
+        }
+        sb.append("|\n");
+
+        // 打印分隔符
+        sb.append("-".repeat(firstColWidth));
+        for (int width : dataColWidths) {
+            sb.append("+-").append("-".repeat(width - 2));
+        }
+        sb.append("+\n");
+
+        // 打印数据行 (先 S 后 R)
+        int sCount = 0;
+        for (ResetClockTimedWord prefix : allPrefixes) {
+            boolean isInS = sCount < sortedS.size();
+            String prefixStr = truncate(prefix.toString(), maxWordLength);
+            String marker = isInS ? "(S) " : "(R) ";
+            sb.append(String.format("%-" + firstColWidth + "s", marker + prefixStr));
+
+            for (int i = 0; i < sortedE.size(); i++) {
+                RegionTimedWord suffix = sortedE.get(i);
+                Pair<ResetClockTimedWord, RegionTimedWord> key = Pair.of(prefix, suffix);
+                Boolean fVal = f.get(key);
+                List<Set<Clock>> gValList = g.get(key); // g 的值是一个列表
+
+                String fStr = (fVal == null) ? "?" : (fVal ? "T" : "F"); // 处理可能的 null
+                String gStr;
+                if (gValList == null) {
+                    gStr = "?"; // 处理可能的 null
+                } else if (gValList.isEmpty()) {
+                    // 对于空后缀 epsilon，g 值是空列表；或者如果某个猜测结果没有重置
+                    gStr = "[]";
+                } else {
+                    // g 值是 List<Set<Clock>>。通常对于一个确定的 (prefix, suffix) 对，
+                    // 在 fillTable 后应该有一个主要的重置序列。这里我们显示列表中的第一个。
+                    // 如果 fillTable 存储了多种可能性，这里可能需要调整。
+                    gStr = formatGValue(gValList.get(0)); // 格式化第一个（或唯一的）重置集合
+                }
+
+                String cellContent = String.format("f=%s, g=%s", fStr, gStr);
+                sb.append("| ").append(String.format("%-" + (dataColWidths.get(i) - 2) + "s", cellContent));
+            }
+            sb.append("|\n");
+            sCount++;
+            if (isInS && sCount == sortedS.size()) { // 在 S 和 R 之间添加分隔线
+                sb.append("-".repeat(firstColWidth));
+                for (int width : dataColWidths) {
+                    sb.append("+-").append("-".repeat(width - 2));
+                }
+                sb.append("+\n");
+            }
+        }
+
+        // --- 缓存信息 (可选) ---
+        sb.append("\n--- 缓存状态 ---\n");
+        sb.append("行缓存大小 (Row Cache): ").append(rowCache.size()).append("\n");
+        sb.append("最后动作缓存大小 (Last Action Cache): ").append(lastActionCache.size()).append("\n");
+        sb.append("最后区域缓存大小 (Last Region Cache): ").append(lastRegionCache.size()).append("\n");
+
+        sb.append("=============================================\n");
         return sb.toString();
+    }
+
+    // 辅助函数：良好地格式化 g 值 (Set<Clock>)
+    private String formatGValue(Set<Clock> resetSet) {
+        if (resetSet == null) {
+            return "?"; // 处理 null
+        }
+        if (resetSet.isEmpty()) {
+            return "{}"; // 空集合
+        }
+        // 对时钟名称排序，使其更易读
+        return "{" + resetSet.stream()
+                .map(Clock::getName) // 假设 Clock 有 getName()
+                .sorted()
+                .collect(Collectors.joining(", ")) + "}";
+    }
+
+    // 辅助函数：截断长字符串
+    private String truncate(String str, int maxLength) {
+        if (str == null) {
+            return "null";
+        }
+        if (str.length() <= maxLength) {
+            return str;
+        }
+        // 截断并在末尾添加 "..."
+        return str.substring(0, maxLength - 3) + "...";
+    }
+
+    public static void main(String[] args) {
+        // 先构造测试表实例：实例化字母表和一个时钟配置
+        Alphabet alphabet = new Alphabet();
+        alphabet.createAction("a1");
+        alphabet.createAction("a2");
+        alphabet.createAction("a3");
+        // 假设时钟配置为：{c1, c2, c3}，使用for循环构造，时钟数为n
+        int n = 2;
+        Set<Clock> clocks = new HashSet<>();
+        Map<Clock, Integer> clockBounds = new HashMap<>();
+        for (int i = 0; i < n; i++) {
+            Clock clock = new Clock("c"+(i+1), 1);
+            clocks.add(clock);
+            clockBounds.put(clock, clock.getKappa());
+        }
+        ClockConfiguration configuration = new ClockConfiguration(clockBounds);
+        ObservationTable table = new ObservationTable(alphabet, n, new NormalTeacher(), configuration);
+        // 根据时钟集合，构造时钟赋值列表
+        List<ClockValuation> clockValuations = new ArrayList<>();
+        List<Rational> values = new ArrayList<>();
+
+        values.add(Rational.valueOf(1000001, 1000000));
+        values.add(Rational.valueOf(1000001, 1000000));
+        values.add(Rational.valueOf(0));
+        values.add(Rational.valueOf(0));
+        int j = 0;
+        for (int i = 0; i < 2; i++) {
+            SortedMap<Clock, Rational> clockValues = new TreeMap<>();
+            for (Clock clock: table.clocks) {
+                clockValues.put(clock, values.get(j++));
+            }
+            clockValuations.add(new ClockValuation(clockValues));
+        }
+        Map<ClockValuation, DisjunctiveConstraint> result = table.partitionFunction(clockValuations);
     }
 }

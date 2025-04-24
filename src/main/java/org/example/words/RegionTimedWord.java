@@ -9,6 +9,7 @@ import org.example.region.Region;
 import org.example.ClockConfiguration;
 import org.example.region.RegionSolver;
 import org.example.utils.Rational;
+import org.example.utils.Z3Solver;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,6 +24,8 @@ import static java.util.Collections.EMPTY_LIST;
  */
 public final class RegionTimedWord extends Word<Pair<Action, Region>> {
     public static final RegionTimedWord EMPTY = new RegionTimedWord(EMPTY_LIST);
+    private static final Z3Solver SOLVER = new Z3Solver();
+
     public RegionTimedWord(List<Pair<Action, Region>> actions) {
         super(actions);
     }
@@ -46,8 +49,7 @@ public final class RegionTimedWord extends Word<Pair<Action, Region>> {
             List<Set<Clock>> resetSequence,
             ClockValuation startValuation,
             Set<Clock> clocks,
-            ClockConfiguration configuration,
-            RegionSolver regionSolver) {
+            ClockConfiguration configuration) {
 
         if (resetSequence.size() != this.timedActions.size()) {
             throw new IllegalArgumentException("重置长度与区域字不符");
@@ -66,12 +68,10 @@ public final class RegionTimedWord extends Word<Pair<Action, Region>> {
             Set<Clock> resets = resetSequence.get(i);
 
             // 查找满足区域约束的延时
-            Optional<Rational> delayOpt = regionSolver.solveDelay(currentValuation, region);
+            Optional<Rational> delayOpt = RegionSolver.solveDelay(currentValuation, region);
 
             if (delayOpt.isEmpty()) {
-                // 对于这个重置序列和起始状态，无法满足区域约束，此路径无效
-                System.err.println("无法为区域 " + region + " 从状态 " + currentValuation + " 找到有效延时");
-                return null;
+                throw new IllegalArgumentException("无法为区域 " + region + " 从状态 " + currentValuation + " 找到有效延时");
             }
 
             Rational delay = delayOpt.get();

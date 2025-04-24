@@ -8,10 +8,10 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * 表示多时钟系统的时钟赋值向量（优化版，含区域比较缓存）
+ * 表示多时钟系统的时钟赋值向量
  * @author Ayalyt
  */
-public final class ClockValuation {
+public final class ClockValuation implements Comparable<ClockValuation>{
     @Getter
     private final SortedMap<Clock, Rational> clockValuation; // 时钟 → 值
 
@@ -123,5 +123,25 @@ public final class ClockValuation {
         return clockValuation.entrySet().stream()
                 .map(e -> e.getKey() + "=" + e.getValue().toString())
                 .collect(Collectors.joining(", ", "[", "]"));
+    }
+
+    /**
+     * @param o the object to be compared.
+     * @return
+     * */
+    @Override
+    public int compareTo(ClockValuation o) {
+        SortedMap<Clock, Rational> otherVals = o.clockValuation;
+        Iterator<Map.Entry<Clock, Rational>> thisIter = clockValuation.entrySet().iterator();
+        Iterator<Map.Entry<Clock, Rational>> otherIter = otherVals.entrySet().iterator();
+        while (thisIter.hasNext() && otherIter.hasNext()) {
+            Map.Entry<Clock, Rational> thisEntry = thisIter.next();
+            Map.Entry<Clock, Rational> otherEntry = otherIter.next();
+            int valComparison = thisEntry.getValue().compareTo(otherEntry.getValue());
+            if (valComparison!= 0) {
+                return valComparison;
+            }
+        }
+        return 0;
     }
 }

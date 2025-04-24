@@ -44,100 +44,87 @@ public final class ResetClockTimedWord extends Word<Triple<Action, ClockValuatio
         return WordType.RESET_CLOCK_TIMED;
     }
 
+    /**
+     * 将当前的 Reset-Clocked Word 转换为 Reset-Delay-Timed Word。
+     * Reset-Clocked Word 是序列 (σ1, v1, B1)...(σn, vn, Bn)，其中 vi 是在动作 σi 发生前（延迟 ti 之后）
+     * 但在重置 Bi 应用之前的时钟估值。
+     * Reset-Delay-Timed Word 是序列 (σ1, t1, B1)...(σn, tn, Bn)，其中 ti 是动作 σi 发生前的延迟。
+     * 核心关系：vi = v'_{i-1} + ti，其中 v'_{i-1} 是重置 B_{i-1} 应用后的估值
+     * (v'_{i-1} = [B_{i-1} -> 0] v_{i-1})，并且 v'_0 = 全零估值。
+     *
+     * @param clocks 涉及估值的完整时钟集合。
+     * @return 对应的 ResetDelayTimedWord 对象。
+     * @throws IllegalStateException 如果输入的 Reset-Clocked Word 不一致或不对应于有效的定时运行
+     * @throws NoSuchElementException 如果估值中缺少 'clocks' 参数中定义的时钟。
+     */
     public ResetDelayTimedWord toResetDelayTimedWord(Collection<Clock> clocks) {
         List<Triple<Action, Rational, Set<Clock>>> delayActions = new ArrayList<>();
-        if (this.getTimedActions().isEmpty()) {
+
+        if (this.timedActions == null || this.timedActions.isEmpty()) {
             return new ResetDelayTimedWord(delayActions);
         }
 
-        // Process first action
-        Triple<Action, ClockValuation, Set<Clock>> first = this.getTimedActions().get(0);
-        ClockValuation initialValuation = ClockValuation.zero(clocks); // Initialized to 0 for all clocks
-        ClockValuation firstValuation = first.getMiddle();
-        Set<Clock> firstReset = first.getRight();
+        // v'_0: 第一个动作之前的（隐式）重置后的估值（全零）
+        ClockValuation prevValuationAfterReset = ClockValuation.zero(clocks);
 
-        // Calculate t1 from non-reset clocks
-        Rational t1 = Rational.ZERO;
-        boolean t1Initialized = false;
-        for (Clock c : firstValuation.getClocks()) {
-            if (!firstReset.contains(c)) {
-                Rational value = firstValuation.getValue(c);
-                if (!t1Initialized) {
-                    t1 = value;
-                    t1Initialized = true;
-                } else if (!t1.equals(value)) {
-                    throw new IllegalStateException("Invalid clock valuations for first action");
-                }
-            }
-        }
-        if (!t1Initialized) {
-            // 如果所有时钟都被重置，使用任意时钟的值作为delay
-            t1 = firstValuation.getValue(firstValuation.getClocks().iterator().next());
-            // 验证所有时钟值一致
-            for (Clock c : firstValuation.getClocks()) {
-                if (!firstValuation.getValue(c).equals(t1)) {
-                    throw new IllegalStateException("Inconsistent clock values in first action");
-                }
-            }
-        }
+        // 遍历输入的每个定时动作 (σi, vi, Bi)
+        for (int i = 0; i < this.timedActions.size(); i++) {
+            Triple<Action, ClockValuation, Set<Clock>> currentTimedAction = this.timedActions.get(i);
+            Action currentAction = currentTimedAction.getLeft(); // 当前动作 σi
+            // vi: 动作 i 发生前（重置 Bi 之前）的估值
+            ClockValuation currentValuationBeforeReset = currentTimedAction.getMiddle();
+            // Bi: 动作 i 的重置集合
+            Set<Clock> currentResetSet = currentTimedAction.getRight();
 
-        for (Clock c : firstReset) {
-            if (!firstValuation.getValue(c).equals(Rational.ZERO)) {
-                throw new IllegalStateException("Reset clock not zero in first action");
-            }
-        }
-        delayActions.add(Triple.of(first.getLeft(), t1, firstReset));
-        ClockValuation prevValuation = initialValuation.delay(t1).reset(firstReset);
-
-        // Process remaining actions
-        for (int i = 1; i < this.getTimedActions().size(); i++) {
-            Triple<Action, ClockValuation, Set<Clock>> current = getTimedActions().get(i);
-            ClockValuation currentValuation = current.getMiddle();
-            Set<Clock> currentReset = current.getRight();
-
-            // Calculate delay time ti
-            Rational ti = Rational.ZERO;
-            boolean tiInitialized = false;
-            for (Clock c : prevValuation.getClocks()) {
-                if (!currentReset.contains(c)) {
-                    Rational expected = prevValuation.getValue(c).add(tiInitialized ? ti : Rational.ZERO);
-                    Rational actual = currentValuation.getValue(c);
-                    if (!tiInitialized) {
-                        ti = actual.subtract(prevValuation.getValue(c));
-                        tiInitialized = true;
-                        expected = actual;
-                    }
-                    if (!actual.equals(expected) || ti.compareTo(Rational.ZERO) < 0) {
-                        throw new IllegalStateException("Invalid clock valuations for action " + i);
-                    }
+            // 检查是否有可用的时钟来确定延迟
+            if (clocks.isEmpty()) {
+                if (!currentValuationBeforeReset.equals(ClockValuation.zero(clocks))) {
+                    throw new IllegalStateException("步骤 " + i + ": 存在非零估值但没有时钟。");
                 }
+                delayActions.add(Triple.of(currentAction, Rational.ZERO, currentResetSet));
+                continue;
             }
-            if (!tiInitialized) {
-                // 通过任意时钟计算delay
-                Clock anyClock = prevValuation.getClocks().iterator().next();
-                ti = currentValuation.getValue(anyClock).subtract(prevValuation.getValue(anyClock));
 
-                // 验证这个delay对所有时钟都成立
-                ClockValuation tempValuation = prevValuation.delay(ti);
-                for (Clock c : prevValuation.getClocks()) {
-                    if (!currentValuation.getValue(c).equals(tempValuation.getValue(c))) {
-                        throw new IllegalStateException("Invalid clock valuations for action " + i);
-                    }
-                }
+            // --- 计算延迟 ti ---
+            // ti = vi,c - v'_{i-1},c
+            Clock referenceClock = clocks.iterator().next();
+            Rational calculatedDelay;
+            try {
+                Rational currentValRef = currentValuationBeforeReset.getValue(referenceClock); // vi,c
+                Rational prevValRef = prevValuationAfterReset.getValue(referenceClock);    // v'_{i-1},c
+                calculatedDelay = currentValRef.subtract(prevValRef); // ti = vi,c - v'_{i-1},c
+            } catch (NoSuchElementException e) {
+                throw new NoSuchElementException("步骤 " + i + ": 参考时钟 " + referenceClock +
+                        " 在提供的估值中未找到。");
             }
-            // Verify reset clocks are 0
-            for (Clock c : currentReset) {
-                if (!currentValuation.getValue(c).equals(Rational.ZERO)) {
-                    throw new IllegalStateException("Reset clock not zero in action " + i);
-                }
+
+            // --- 验证计算出的延迟 ti ---
+            // 1. 检查延迟是否为非负数
+            if (calculatedDelay.compareTo(Rational.ZERO) < 0) {
+                throw new IllegalStateException("步骤 " + i + ": 计算得到负延迟 (" + calculatedDelay + ")。" +
+                        " 上一步重置后估值: " + prevValuationAfterReset +
+                        ", 当前重置前估值: " + currentValuationBeforeReset);
             }
-            delayActions.add(Triple.of(current.getLeft(), ti, currentReset));
-            prevValuation = prevValuation.delay(ti).reset(currentReset);
+
+            // 2. 验证一致性: 检查 vi == v'_{i-1} + ti 是否对所有时钟都成立
+            //    基于 v'_{i-1} 和计算出的 ti，重新构建预期的 vi
+            ClockValuation expectedValuationBeforeReset = prevValuationAfterReset.delay(calculatedDelay);
+
+            if (!currentValuationBeforeReset.equals(expectedValuationBeforeReset)) {
+                throw new IllegalStateException(
+                        "步骤 " + i + ": 对于计算出的延迟 " + calculatedDelay + "，时钟估值不一致。" +
+                                " 上一步重置后估值: " + prevValuationAfterReset +
+                                ", 当前重置前估值: " + currentValuationBeforeReset);
+            }
+
+            delayActions.add(Triple.of(currentAction, calculatedDelay, currentResetSet));
+
+            // v'_i = [Bi -> 0] vi
+            prevValuationAfterReset = currentValuationBeforeReset.reset(currentResetSet);
         }
 
         return new ResetDelayTimedWord(delayActions);
     }
-
     public ResetRegionTimedWord toResetRegionWord(ClockConfiguration config) {
         return new ResetRegionTimedWord(
                 timedActions.stream()

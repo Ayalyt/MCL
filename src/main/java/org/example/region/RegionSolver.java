@@ -3,6 +3,8 @@ package org.example.region;
 import com.microsoft.z3.*;
 import org.example.Clock;
 import org.example.ClockValuation;
+import org.example.constraint.AtomConstraint;
+import org.example.constraint.Constraint;
 import org.example.utils.Rational;
 import org.example.utils.Z3Converter;
 import org.example.words.ResetClockTimedWord;
@@ -17,134 +19,182 @@ public class RegionSolver {
     public RegionSolver() {
     }
 
+
     /**
-     * 查找一个非负延迟 'd'，使得 currentValuation + d 位于 targetRegion 内。
-     * 使用内部管理的 Z3 Context 和 Solver。
+     * 查找最小的非负延迟 d >= 0，使得 v_curr 延迟 d 后进入目标区域 R_target。
+     * 这对应论文算法1中所需的 Solve 函数功能。
      *
-     * @param currentValuation 起始时钟赋值 (Map<Clock, Rational>)。
-     * @param targetRegion     目标区域定义。
-     * @return 如果找到，返回包含 Rational 延迟 'd' 的 Optional，否则返回 Optional.empty()。
+     * @param v_curr   当前的时钟赋值。
+     * @param R_target 目标区域。
+     * @return 最小的非负延迟 Rational 值；如果不存在这样的延迟，则返回 null。
      */
-    public Optional<Rational> solveDelay(ClockValuation currentValuation, Region targetRegion) {
-        Objects.requireNonNull(currentValuation, "当前时钟赋值不能为空");
-        Objects.requireNonNull(targetRegion, "目标区域不能为空");
+    public static Optional<Rational> solveDelay(ClockValuation v_curr, Region R_target) {
+        // 初始化全局最小延迟为 0
+        Rational d_min = Rational.ZERO;
 
-        try (Context ctx = new Context()) {
-            Solver solver = ctx.mkSolver();
-            // 1. 保存当前求解器状态
+        try {
+            // 遍历目标区域配置中定义的所有时钟
+            for (Clock c : R_target.getConfig().getClocks()) {
+                // 跳过特殊的 x0 时钟（如果存在且不需要处理）
+                if (c.isZeroClock()) {
+                    continue;
+                }
 
-            // 2. 延迟变量d
-            RealExpr d = ctx.mkRealConst("d");
+                // 获取当前时钟 c 的值
+                Rational val_curr = v_curr.getValue(c);
+                // 获取目标区域对时钟 c 的整数部分要求
+                Integer k_target_int = R_target.getIntegerParts().get(c);
+                if (k_target_int == null) {
+                    // 防御性编程：如果区域定义不完整
+                    throw new NoSuchElementException("时钟 " + c + " 在目标区域整数部分定义中未找到。");
+                }
+                Rational k_target = Rational.valueOf(k_target_int); // 转换为 Rational
+                // 获取时钟 c 的上界 kappa
+                int kappa_int = R_target.getConfig().getClockKappa(c);
+                Rational kappa = Rational.valueOf(kappa_int); // 转换为 Rational
 
-            // 所有约束的列表
-            List<BoolExpr> constraints = new ArrayList<>();
+                // 初始化当前时钟 c 所需的最小延迟为 0
+                Rational d_lower_c = Rational.ZERO;
 
-            // 3. 延迟 d 必须大于等于 0
-            constraints.add(ctx.mkGe(d, Z3Converter.rational2Ratnum(Rational.ZERO, ctx)));
+                // --- 约束 1: 整数部分下界 ---
+                if (k_target_int > kappa_int) { // 对应区域定义 v(c) > kappa 的情况
+                    // 需要 val_curr + d > kappa
+                    // 计算到达边界 kappa 所需的最小延迟 (可能为负，取 max(0, ...))
+                    d_lower_c = Rational.max(Rational.ZERO, kappa.subtract(val_curr));
+                    // 注意：这里计算的是到达边界的延迟。严格大于 '>' 由后续 contains 检查。
+                } else { // 对应区域定义 floor(v(c)) == k_target 的情况
+                    // 这意味着需要 val_curr + d >= k_target
+                    // 计算到达下界 k_target 所需的最小延迟
+                    d_lower_c = Rational.max(Rational.ZERO, k_target.subtract(val_curr));
+                }
 
-            // 存储小数部分表达式以便后续排序
-            Map<Clock, ArithExpr<RealSort>> fracExpressions = new HashMap<>();
+                // --- 约束 2: 零小数部分 (仅当 k_target <= kappa 时适用) ---
+                if (R_target.getZeroFractionClocks().contains(c)) {
+                    // 需要 val_curr + d 等于某个整数 I，且这个整数必须是 k_target
+                    Rational target_integer_val = k_target; // 目标整数值就是 k_target
 
-            // 4. 为每个时钟处理约束
-            for (Clock clock : currentValuation.getClocks()) {
-                Rational currentVal = currentValuation.getValue(clock);
+                    // 计算精确达到 target_integer_val 所需的最小非负延迟
+                    Rational d_to_target_int = Rational.max(Rational.ZERO, target_integer_val.subtract(val_curr));
 
-                // 获取该时钟在目标区域的约束信息
-                int kappa = targetRegion.getConfig().getClockKappa(clock); // 时钟上限
-                Integer targetInt = targetRegion.getIntegerParts().get(clock); // 目标整数部分 (如果 > kappa 则为 null)
+                    // 检查应用此延迟后是否真的得到目标整数
+                    Rational val_at_d = val_curr.add(d_to_target_int);
 
-                // Z3 表达式: currentVal + d
-                RatNum currentExprZ3 = Z3Converter.rational2Ratnum(currentVal, ctx); // 使用 Rational 类精确转换
-                ArithExpr<RealSort> vPlusD = ctx.mkAdd(currentExprZ3, d);
-
-                // --- 整数部分约束 ---
-                IntExpr floorVPlusD = ctx.mkReal2Int(vPlusD); // Z3 的 floor 函数: floor(v + d)
-
-                if (targetInt != null) { // 情况 1: 目标整数部分 targetInt <= kappa
-                    // 约束：floor(v + d) == targetInt
-                    constraints.add(ctx.mkEq(floorVPlusD, ctx.mkInt(targetInt)));
-
-                    // --- 小数部分约束 (仅当 targetInt <= kappa 时需要) ---
-                    // 计算小数部分: (v + d) - floor(v + d)
-                    ArithExpr<RealSort> fracPart = ctx.mkSub(vPlusD, ctx.mkInt2Real(floorVPlusD));
-
-                    if (targetRegion.getZeroFractionClocks().contains(clock)) {
-                        // 情况 1a: 小数部分必须为 0
-                        constraints.add(ctx.mkEq(fracPart, Z3Converter.rational2Ratnum(Rational.ZERO, ctx)));
+                    if (val_at_d.compareTo(target_integer_val) == 0 && val_at_d.isInteger()) {
+                        // 如果精确到达了目标整数 k_target
+                        d_lower_c = Rational.max(d_lower_c, d_to_target_int);
                     } else {
-                        // 情况 1b: 小数部分非零，存储表达式用于排序
-                        // 添加约束 fracPart > 0 (因为非零)
-                        constraints.add(ctx.mkGt(fracPart, Z3Converter.rational2Ratnum(Rational.ZERO, ctx)));
-                        fracExpressions.put(clock, fracPart); // 存储小数部分表达式
-                    }
-                } else {
-                    // 情况 2: 目标整数部分 > kappa (targetInt 为 null)
-                    // 约束：floor(v + d) > kappa
-                    constraints.add(ctx.mkGt(floorVPlusD, ctx.mkInt(kappa)));
-                    // 当值超过 kappa 时，不需要小数部分的约束
-                }
-            }
+                        // 如果无法精确到达 k_target (可能因为小数部分或已超过)
+                        // 则需要找到第一个可达的、且 >= k_target 的整数
+                        // ceil(val_curr) 是 >= val_curr 的最小整数
+                        Rational ceil_val_curr = val_curr.isInteger() ? val_curr : Rational.valueOf(val_curr.intValue() + 1);
+                        // 第一个可达的目标整数是 target_integer_val 和 ceil_val_curr 中的较大者
+                        Rational first_reachable_int = Rational.max(target_integer_val, ceil_val_curr);
 
-            // 5. 处理小数部分的顺序约束
-            List<Region.ClockFraction> fractionOrder = targetRegion.getFractionOrder();
-            for (int i = 0; i < fractionOrder.size() - 1; i++) {
-                Clock c1 = fractionOrder.get(i).clock();
-                Clock c2 = fractionOrder.get(i + 1).clock();
-
-                ArithExpr<RealSort> frac1 = fracExpressions.get(c1);
-                ArithExpr<RealSort> frac2 = fracExpressions.get(c2);
-
-                // 添加严格小于约束：frac(c1) < frac(c2)
-                // 仅当两个时钟都有非零小数部分才添加约束
-                if (frac1 != null && frac2 != null) {
-                    constraints.add(ctx.mkLt(frac1, frac2));
-                } else {
-                    System.err.println("警告: 排序列表中的时钟 (" + c1 + " 或 " + c2 + ") 没有非零小数部分表达式。");
-                }
-            }
-
-            // 6. 将所有约束添加到求解器
-            solver.add(constraints.toArray(new BoolExpr[0]));
-
-            // 7. 检查约束是否可满足
-            Status status = solver.check();
-
-            // 8. 处理结果
-            if (status == Status.SATISFIABLE) {
-                Model model = solver.getModel();
-                Expr<?> resultExpr = model.evaluate(d, false);
-
-                // 9. 将 Z3 结果转换回 Rational 类型
-                Rational delayResult;
-                if (resultExpr instanceof RatNum) {
-                    delayResult = Z3Converter.ratnum2Rational((RatNum) resultExpr);
-                } else if (resultExpr instanceof IntNum) {
-                    delayResult = Rational.valueOf(((IntNum) resultExpr).getInt());
-                } else {
-                    // 处理其他可能的返回类型（不太常见，但为了健壮性）
-                    System.err.println("警告: Z3 为延迟 'd' 返回了非预期的类型: " + resultExpr.getClass() + "，尝试字符串转换。");
-                    try {
-                        delayResult = Rational.valueOf(resultExpr.toString());
-                    } catch (NumberFormatException | ArithmeticException parseEx) {
-                        System.err.println("错误: 无法将 Z3 结果 '" + resultExpr + "' 解析为 Rational。");
-                        return Optional.empty();
+                        // 计算到达这个 first_reachable_int 所需的最小非负延迟
+                        Rational d_to_first_int = Rational.max(Rational.ZERO, first_reachable_int.subtract(val_curr));
+                        // 更新当前时钟的最小延迟要求
+                        d_lower_c = Rational.max(d_lower_c, d_to_first_int);
                     }
                 }
 
-                return Optional.of(delayResult);
-            } else {
-                // 如果状态是 UNSATISFIABLE 或 UNKNOWN
-                System.out.println("求解器状态: " + status);
-                return Optional.empty();
+                // 更新全局最小延迟 (取所有时钟要求的最大值)
+                d_min = Rational.max(d_min, d_lower_c);
             }
-        } catch (Z3Exception e) {
-            System.err.println("Z3 错误 (solveDelay): " + e.getMessage());
-            e.printStackTrace();
+
+        } catch (NoSuchElementException e) {
+            // 处理获取时钟值或区域信息时可能发生的错误
+            System.err.println("计算 d_min 时出错: " + e.getMessage());
+            return Optional.empty(); // 或者根据需要进行其他错误处理
+        }
+
+        // --- 验证步骤 ---
+        // 计算应用全局最小延迟 d_min 后的时钟赋值
+        ClockValuation v_check = v_curr.delay(d_min);
+
+        // 使用 Region 的 contains 方法检查 v_check 是否完全满足目标区域的所有条件
+        // (包括整数部分、零小数、小数排序、严格不等式等)
+        if (R_target.contains(v_check)) {
+            // 如果 contains 返回 true，说明 d_min 是一个有效的延迟解
+            return Optional.ofNullable(d_min);
+        } else {
+            // 如果 contains 返回 false，说明即使满足了所有计算出的下界/零小数要求，
+            // 最终结果 v_check 仍然不满足区域的某些约束（如隐式上界、严格小数排序、或正好在严格边界上）。
+            // 这意味着不存在满足条件的非负延迟 d。
             return Optional.empty();
-        } catch (Exception e) {
-            System.err.println("意外错误 (solveDelay): " + e.getMessage());
-            e.printStackTrace();
-            return Optional.empty();
+        }
+    }
+
+    public static Optional<Rational> solveDelay(ClockValuation currentValues, Constraint guard){
+        Rational maxLowerBound = Rational.ZERO;
+        boolean strictLowerBoundExists = false;
+        Rational maxStrictLowerBound = Rational.ZERO;
+
+        for (AtomConstraint ac : guard.getConstraints()) {
+            Clock c1 = ac.getClock1();
+            Clock c2 = ac.getClock2();
+            Rational V = ac.getUpperbound();
+            boolean isStrict = !ac.isClosed();
+
+            if (V.equals(Rational.INFINITY)) {
+                continue;
+            }
+
+            Rational val1 = c1.isZeroClock() ? Rational.ZERO : currentValues.getValue(c1);
+            Rational val2 = c2.isZeroClock() ? Rational.ZERO : currentValues.getValue(c2);
+
+            Rational lowerBound = null;
+            boolean currentIsStrict = false;
+
+            if (!c1.isZeroClock() && !c2.isZeroClock()) {
+                if (isStrict) { // val1 - val2 < V
+                    if (val1.subtract(val2).compareTo(V) >= 0) {
+                        return Optional.of(Rational.INFINITY);
+                    }
+                } else { // val1 - val2 <= V
+                    if (val1.subtract(val2).compareTo(V) > 0) {
+                        return Optional.of(Rational.INFINITY);
+                    }
+                }
+                continue;
+            } else if (!c1.isZeroClock() && c2.isZeroClock()) {
+                continue;
+            } else if (c1.isZeroClock() && !c2.isZeroClock()) {
+                // val1 - (val2 + d) <= V  =>  -d <= V - val1 + val2  =>  d >= val1 - val2 - V
+                lowerBound = val1.subtract(val2).subtract(V);
+                currentIsStrict = isStrict; // 继承原子约束的严格性
+            } else { // c1.isZeroClock() && c2.isZeroClock()
+                if (isStrict) { // 0 < V
+                    if (Rational.ZERO.compareTo(V) >= 0) {
+                        return Optional.of(Rational.INFINITY);
+                    }
+                } else { // 0 <= V
+                    if (Rational.ZERO.compareTo(V) > 0) {
+                        return Optional.of(Rational.INFINITY);
+                    }
+                }
+                continue;
+            }
+
+            if (lowerBound != null) {
+                if (currentIsStrict) {
+                    strictLowerBoundExists = true;
+                    if (lowerBound.compareTo(maxStrictLowerBound) > 0) {
+                        maxStrictLowerBound = lowerBound;
+                    }
+                } else {
+                    if (lowerBound.compareTo(maxLowerBound) > 0) {
+                        maxLowerBound = lowerBound;
+                    }
+                }
+            }
+        }
+
+        // 确定最终延迟
+        if (strictLowerBoundExists && maxStrictLowerBound.compareTo(maxLowerBound) >= 0) {
+            return Optional.of(maxStrictLowerBound.add(Rational.EPSILON));// 简化处理，直接返回最大严格下界
+        } else {
+            // 最小延迟是 maxLowerBound
+            return maxLowerBound.compareTo(Rational.ZERO) >= 0 ? Optional.of(maxLowerBound.add(Rational.EPSILON)) : Optional.of(Rational.ZERO);
         }
     }
 

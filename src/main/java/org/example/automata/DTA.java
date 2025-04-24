@@ -8,6 +8,7 @@ import org.example.ClockConfiguration;
 import org.example.constraint.AtomConstraint;
 import org.example.constraint.Constraint;
 import org.example.constraint.DisjunctiveConstraint;
+import org.example.region.RegionSolver;
 import org.example.utils.Rational;
 import org.example.utils.Z3Converter;
 import org.example.words.DelayTimedWord;
@@ -65,7 +66,6 @@ public class DTA {
                 this.initialLocation,
                 this.configuration
         );
-
 
 
         // 2. 复制集合类成员（不复制元素对象）
@@ -421,106 +421,301 @@ public class DTA {
      * @param dta 要查找见证的 DTA。
      * @return 如果语言非空，返回 Optional<TimedWord>；否则返回 Optional.empty()。
      */
+//    public Optional<DelayTimedWord> findWitness(DTA dta) {
+//        Objects.requireNonNull(dta, "DTA不能为null");
+//        Set<Clock> clocks = dta.getClocks();
+//        // System.out.println("findWitness: 要寻找见证的DTA：" + dta);
+//
+//        // 状态表示: (Location, DBM)
+//        // 路径回溯信息: Map<State, Pair<PreviousState, Transition>>
+//        Map<Pair<Location, DBM>, Pair<Pair<Location, DBM>, Transition>> predecessors = new HashMap<>();
+//
+//        Location initialLocation = dta.getInitialLocation();
+//        DBM initialDBM = DBM.createInitial(clocks);
+//        Pair<Location, DBM> initialState = Pair.of(initialLocation, initialDBM);
+//        System.out.println("findWitness: [初始状态] 位置=" + initialLocation + ", DBM=\n" + initialDBM);
+//        Queue<Pair<Location, DBM>> worklist = new LinkedList<>();
+//        // 使用 Map<Location, List<DBM>> 来存储已访问区域，用于包含性检查
+//        Map<Location, List<DBM>> passed = new HashMap<>();
+//
+//        // 检查初始状态是否接受 (特殊情况: 空字)
+//        if (dta.isAccepting(initialLocation)) {
+//            // 初始 DBM 必须非空才能接受空词 (通常初始 DBM 总是非空)
+//            if (!initialDBM.isEmpty()) {
+//                // System.out.println("[初始检查] 初始状态即接受且 DBM 非空，找到空词见证 epsilon。");
+//                return Optional.of(new DelayTimedWord(Collections.emptyList()));
+//            } else {
+//                // System.out.println("[初始检查] 初始状态是接受状态，但初始 DBM 为空 (异常情况)，无法接受空词。");
+//                // 理论上 createInitial 不会返回空 DBM，除非时钟集为空或 DBM 实现有误
+//            }
+//        } else {
+//            // System.out.println("findWitness: [初始检查] 初始状态不是接受状态。");
+//        }
+//
+//        // System.out.println("findWitness: [BFS 初始化] 将初始状态加入 worklist 和 passed。");
+//        worklist.add(initialState);
+//        passed.computeIfAbsent(initialLocation, k -> new ArrayList<>()).add(initialDBM);
+//
+//        int iteration = 0;
+//        while (!worklist.isEmpty()) {
+//            iteration++;
+//            System.out.println("\nfindWitness: --- BFS 迭代 #" + iteration + " ---");
+//            Pair<Location, DBM> currentPair = worklist.poll();
+//            Location currentLocation = currentPair.getLeft();
+//            DBM currentDBM = currentPair.getRight();
+//            // System.out.println("findWitness: [处理状态] 位置=" + currentLocation + ", DBM (hash=" + currentDBM + "):\n" + currentDBM);
+//
+//            // System.out.println("findWitness:   [探索转移] 探索从 " + currentLocation + " 出发的所有转移:");
+//            // 探索从当前位置出发的所有转移
+//            for (Transition transition : dta.getOutgoingTransitions(currentLocation)) {
+//                Constraint guard = transition.getGuard();
+//                Set<Clock> resets = transition.getResets();
+//                Location targetLocation = transition.getTarget();
+//                Action action = transition.getAction(); // 获取动作信息
+//
+//                // System.out.println("findWitness:     --> [考虑转移] " + transition); // 打印转移详情
+//
+//                // --- 核心逻辑 ---
+//                DBM nextDBM = currentDBM.copy();
+//                // System.out.println("findWitness:       [步骤 1] 复制当前 DBM (新 hash=" + nextDBM + ")"); // 可选：打印复制操作
+//                nextDBM.future();
+//                System.out.println("findWitness:       [步骤 1.5] 时间流逝 (新 hash=" + nextDBM + ")");
+//                // System.out.println("findWitness:       [步骤 2] 应用 Guard: " + guard);
+//                nextDBM.intersect(guard);
+//                // System.out.println("        Guard 应用：" + guard + "；DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+//                // System.out.println("findWitness:         Guard 应用后 (未规范化):\n" + nextDBM); // 可选：打印中间结果
+//                nextDBM.canonical();
+//                // System.out.println("findWitness:         规范化后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+//
+//                boolean emptyAfterGuard = nextDBM.isEmpty();
+//                // System.out.println("findWitness:         Guard 应用后是否为空? " + emptyAfterGuard);
+//
+//                if (!emptyAfterGuard) {
+//                    // System.out.println("findWitness:       [步骤 3] 应用重置: " + resets);
+//                    for (Clock clockToReset : resets) {
+//                        // System.out.println("        重置时钟: " + clockToReset); // 可选：打印每个重置
+//                        nextDBM.reset(clockToReset);
+//                    }
+//                    // 重置后通常不需要立刻规范化，future 会处理
+//                    // System.out.println("findWitness:         重置后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+//
+//                    // System.out.println("findWitness:       [步骤 4] 应用时间流逝 (future = up + canonical)");
+//                    nextDBM.future(); // future 内部包含 up() 和 canonical()
+//                    // System.out.println("findWitness:         时间流逝后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+//
+//                    boolean emptyAfterFuture = nextDBM.isEmpty();
+//                    // System.out.println("findWitness:         时间流逝后是否为空? " + emptyAfterFuture);
+//
+//                    if (!emptyAfterFuture) {
+//                        // System.out.println("findWitness:       [步骤 5] 检查位置 " + targetLocation + " 的覆盖情况 (新 DBM hash=" + nextDBM.hashCode() + ")");
+//                        // --- 检查覆盖与添加 ---
+//                        // 获取目标位置已记录的 DBM 列表，如果不存在则返回空列表
+//                        List<DBM> passedDBMsForTarget = passed.getOrDefault(targetLocation, Collections.emptyList());
+//                        // System.out.println("        目标位置已存在 " + passedDBMsForTarget.size() + " 个已处理 DBM 区域。");
+//
+//                        boolean covered = false;
+//                        DBM coveringDBM = null;
+//                        int passedIndex = -1;
+//                        for (int i = 0; i < passedDBMsForTarget.size(); i++) {
+//                            DBM passedDBM = passedDBMsForTarget.get(i);
+//                            // 检查已存在的 DBM 是否包含新的 DBM
+//                            if (passedDBM.include(nextDBM)) {
+//                                covered = true;
+//                                coveringDBM = passedDBM;
+//                                passedIndex = i;
+//                                break;
+//                            }
+//                        }
+//
+//                        // System.out.println("        新 DBM 是否被已存在的区域覆盖? " + covered);
+//
+//                        if (!covered) {
+//                            // System.out.println("findWitness:         *** 新状态未被覆盖 ***");
+//                            // 移除被新 DBM 包含的旧 DBM (优化，可选但推荐)
+//                            // 注意：直接修改 passedDBMsForTarget 可能导致 ConcurrentModificationException，如果迭代器未正确处理
+//                            // 一个安全的做法是创建一个新列表
+//                            List<DBM> updatedPassedDBMs = new ArrayList<>();
+//                            boolean addedNew = false;
+//                            for (DBM existingDBM : passedDBMsForTarget) {
+//                                if (!nextDBM.include(existingDBM)) { // 如果新 DBM 不包含旧 DBM，保留旧 DBM
+//                                    updatedPassedDBMs.add(existingDBM);
+//                                } else {
+//                                    // System.out.println("findWitness:           优化: 新 DBM (hash=" + nextDBM.hashCode() + ") 包含了旧 DBM (hash=" + existingDBM.hashCode() + ")，将移除旧 DBM。");
+//                                }
+//                            }
+//                            updatedPassedDBMs.add(nextDBM); // 添加新的 DBM
+//                            passed.put(targetLocation, updatedPassedDBMs); // 更新 passed 列表
+//                            // System.out.println("findWitness:         已更新位置 " + targetLocation + " 的 passed 列表 (现在有 " + updatedPassedDBMs.size() + " 个区域)。");
+//
+//
+//                            Pair<Location, DBM> nextPair = Pair.of(targetLocation, nextDBM);
+//                            // System.out.println("findWitness:         添加新状态到 worklist: 位置=" + targetLocation + ", DBM (hash=" + nextDBM.hashCode() + ")");
+//                            worklist.add(nextPair);
+//
+//                            // 记录前驱信息用于回溯
+//                            // System.out.println("findWitness:         记录前驱: (" + targetLocation + ", DBM hash=" + nextDBM.hashCode() + ") <-- ("
+//                            //        + currentLocation + ", DBM hash=" + currentDBM.hashCode() + ") via " + action);
+//                            predecessors.put(nextPair, Pair.of(currentPair, transition));
+//
+//                            // --- 找到接受状态 ---
+//                            if (dta.isAccepting(targetLocation)) {
+//                                // System.out.println("findWitness:     !!!!!! [找到接受状态] 位置: " + targetLocation + " !!!!!!");
+//                                // System.out.println("findWitness:     !!!!!! 对应的 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+//                                // System.out.println("findWitness:     ====== 开始回溯构造 TimedWord ======");
+//                                // 找到了到达接受状态的路径，回溯构造反例
+//                                return Optional.of(reconstructTimedWord(predecessors, nextPair));
+//                            } else {
+//                                // System.out.println("        目标状态 " + targetLocation + " 不是接受状态。");
+//                            }
+//                        } else {
+//                            // System.out.println("        新 DBM (hash=" + nextDBM.hashCode() + ") 被已存在的 DBM #" + passedIndex + " (hash=" + coveringDBM.hashCode() + ") 覆盖，剪枝此路径。");
+//                            // 可选：打印覆盖它的 DBM
+//                            // System.out.println("        覆盖它的 DBM:\n" + coveringDBM);
+//                        }
+//                    } else { // emptyAfterFuture
+//                        // System.out.println("      [剪枝] 时间流逝后 DBM 为空，剪枝此路径。");
+//                    }
+//                } else { // emptyAfterGuard
+//                    // System.out.println("      [剪枝] 应用 Guard 后 DBM 为空，剪枝此路径。");
+//                }
+//                // System.out.println("    <-- [完成转移处理] " + action); // 标记转移处理结束
+//            } // End for transition
+//            // System.out.println("  [完成探索] 完成对来自 " + currentLocation + " 的所有转移的探索。");
+//        } // End while
+//
+//        // 工作列表为空，未找到接受状态
+//        // System.out.println("\n==> BFS 结束，worklist 为空，未找到到达接受状态的路径。");
+//        return Optional.empty();
+//    }
+//
+//    /**
+//     * 从前驱信息中回溯构造一个 timed word。
+//     * (内部可以添加日志)
+//     */
+//    private DelayTimedWord reconstructTimedWord(Map<Pair<Location, DBM>, Pair<Pair<Location, DBM>, Transition>> predecessors, Pair<Location, DBM> finalState) {
+//        // 1. 回溯获取转移序列 (从前到后)
+//        LinkedList<Transition> transitions = new LinkedList<>();
+//        Pair<Location, DBM> currentState = finalState;
+//        while (predecessors.containsKey(currentState)) {
+//            Pair<Pair<Location, DBM>, Transition> predInfo = predecessors.get(currentState);
+//            transitions.addFirst(predInfo.getRight()); // 添加到前端，得到正序
+//            currentState = predInfo.getLeft();
+//        }
+//        // System.out.println("findWitness:   [回溯完成] 得到转移序列: " + transitions);
+//
+//        // 2. 前向模拟计算精确延迟
+//        LinkedList<Pair<Action, Rational>> timedActions = new LinkedList<>();
+//        Set<Clock> clocks = finalState.getValue().getClocks();
+//        clocks.remove(Clock.getZeroClock());
+//        ClockValuation currentClockValues = ClockValuation.zero(clocks);
+//        // System.out.println("findWitness:   [前向模拟开始] 初始时钟值: " + currentClockValues);
+//
+//        for (Transition transition : transitions) {
+//            // System.out.println("findWitness:     [前向模拟步骤] 处理转移: " + transition);
+//            Constraint guard = transition.getGuard();
+//            Set<Clock> resets = transition.getResets();
+//            Action action = transition.getAction();
+//
+//            Rational delay = RegionSolver.solveDelay(currentClockValues, guard).get();
+//            // System.out.println("findWitness:       计算得到的点延迟: " + delay);
+//
+//            timedActions.add(Pair.of(action, delay));
+//
+//            // 更新时钟值：先加延迟，再重置
+//            ClockValuation valuesAfterDelay = currentClockValues.delay(delay);
+//            currentClockValues = valuesAfterDelay.reset(resets);
+//            // System.out.println("findWitness:       动作 '" + action + "' 执行后时钟值: " + currentClockValues);
+//        }
+//
+//        // System.out.println("findWitness:   [前向模拟结束] 构造的路径有 " + timedActions.size() + " 个 (动作, 延迟) 对。");
+//        return new DelayTimedWord(timedActions);
+//    }
     public Optional<DelayTimedWord> findWitness(DTA dta) {
         Objects.requireNonNull(dta, "DTA不能为null");
         Set<Clock> clocks = dta.getClocks();
-        // System.out.println("==> 开始查找见证: DTA 时钟 " + clocks);
+        System.out.println("findWitness: 要寻找见证的DTA：" + dta);
 
-        // 状态表示: (Location, DBM)
-        // 路径回溯信息: Map<State, Pair<PreviousState, Transition>>
         Map<Pair<Location, DBM>, Pair<Pair<Location, DBM>, Transition>> predecessors = new HashMap<>();
 
         Location initialLocation = dta.getInitialLocation();
         DBM initialDBM = DBM.createInitial(clocks);
         Pair<Location, DBM> initialState = Pair.of(initialLocation, initialDBM);
-        // System.out.println("[初始状态] 位置=" + initialLocation + ", DBM=\n" + initialDBM);
-
+        System.out.println("findWitness: [初始状态] 位置=" + initialLocation + ", DBM=\n" + initialDBM);
         Queue<Pair<Location, DBM>> worklist = new LinkedList<>();
-        // 使用 Map<Location, List<DBM>> 来存储已访问区域，用于包含性检查
         Map<Location, List<DBM>> passed = new HashMap<>();
 
-        // 检查初始状态是否接受 (特殊情况: 空字)
         if (dta.isAccepting(initialLocation)) {
-            // 初始 DBM 必须非空才能接受空词 (通常初始 DBM 总是非空)
             if (!initialDBM.isEmpty()) {
-                // System.out.println("[初始检查] 初始状态即接受且 DBM 非空，找到空词见证 epsilon。");
+                System.out.println("[初始检查] 初始状态即接受且 DBM 非空，找到空词见证 epsilon。");
                 return Optional.of(new DelayTimedWord(Collections.emptyList()));
             } else {
-                // System.out.println("[初始检查] 初始状态是接受状态，但初始 DBM 为空 (异常情况)，无法接受空词。");
-                // 理论上 createInitial 不会返回空 DBM，除非时钟集为空或 DBM 实现有误
+                System.out.println("[初始检查] 初始状态是接受状态，但初始 DBM 为空 (异常情况)，无法接受空词。");
             }
         } else {
-            // System.out.println("[初始检查] 初始状态不是接受状态。");
+            System.out.println("findWitness: [初始检查] 初始状态不是接受状态。");
         }
 
-        // System.out.println("[BFS 初始化] 将初始状态加入 worklist 和 passed。");
+        System.out.println("findWitness: [BFS 初始化] 将初始状态加入 worklist 和 passed。");
         worklist.add(initialState);
-        // 使用 computeIfAbsent 确保列表存在
         passed.computeIfAbsent(initialLocation, k -> new ArrayList<>()).add(initialDBM);
-        // 初始状态没有前驱
 
         int iteration = 0;
         while (!worklist.isEmpty()) {
             iteration++;
-            // System.out.println("\n--- BFS 迭代 #" + iteration + " ---");
+            System.out.println("\nfindWitness: --- BFS 迭代 #" + iteration + " ---");
             Pair<Location, DBM> currentPair = worklist.poll();
             Location currentLocation = currentPair.getLeft();
             DBM currentDBM = currentPair.getRight();
-            // System.out.println("[处理状态] 位置=" + currentLocation + ", DBM (hash=" + currentDBM.hashCode() + "):\n" + currentDBM);
+            System.out.println("findWitness: [处理状态] 位置=" + currentLocation + ", DBM (hash=" + currentDBM + "):\n" + currentDBM);
 
-            // System.out.println("  [探索转移] 探索从 " + currentLocation + " 出发的所有转移:");
-            // 探索从当前位置出发的所有转移
+            System.out.println("findWitness:   [探索转移] 探索从 " + currentLocation + " 出发的所有转移:");
             for (Transition transition : dta.getOutgoingTransitions(currentLocation)) {
                 Constraint guard = transition.getGuard();
                 Set<Clock> resets = transition.getResets();
                 Location targetLocation = transition.getTarget();
-                Action action = transition.getAction(); // 获取动作信息
+                Action action = transition.getAction();
 
-                // System.out.println("    --> [考虑转移] " + transition); // 打印转移详情
+                System.out.println("findWitness:     --> [考虑转移] " + transition);
 
-                // --- 核心逻辑 ---
                 DBM nextDBM = currentDBM.copy();
-                // System.out.println("      [步骤 1] 复制当前 DBM (新 hash=" + nextDBM.hashCode() + ")"); // 可选：打印复制操作
-
-                // System.out.println("      [步骤 2] 应用 Guard: " + guard);
+                System.out.println("findWitness:       [步骤 1] 复制当前 DBM (新 hash=" + nextDBM + ")");
+                nextDBM.future();
+                System.out.println("findWitness:       [步骤 1.5] 时间流逝 (新 hash=" + nextDBM + ")");
+                System.out.println("findWitness:       [步骤 2] 应用 Guard: " + guard);
                 nextDBM.intersect(guard);
-                // System.out.println("        Guard 应用：" + guard + "；DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
-                // System.out.println("        Guard 应用后 (未规范化):\n" + nextDBM); // 可选：打印中间结果
+                System.out.println("        Guard 应用：" + guard + "；DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+                System.out.println("findWitness:         Guard 应用后 (未规范化):\n" + nextDBM);
                 nextDBM.canonical();
-                // System.out.println("        规范化后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+                System.out.println("findWitness:         规范化后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
 
                 boolean emptyAfterGuard = nextDBM.isEmpty();
-                // System.out.println("        Guard 应用后是否为空? " + emptyAfterGuard);
+                System.out.println("findWitness:         Guard 应用后是否为空? " + emptyAfterGuard);
 
                 if (!emptyAfterGuard) {
-                    // System.out.println("      [步骤 3] 应用重置: " + resets);
+                    System.out.println("findWitness:       [步骤 3] 应用重置: " + resets);
                     for (Clock clockToReset : resets) {
-                        // System.out.println("        重置时钟: " + clockToReset); // 可选：打印每个重置
+                        System.out.println("        重置时钟: " + clockToReset);
                         nextDBM.reset(clockToReset);
                     }
-                    // 重置后通常不需要立刻规范化，future 会处理
-                    // System.out.println("        重置后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+                    System.out.println("findWitness:         重置后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
 
-                    // System.out.println("      [步骤 4] 应用时间流逝 (future = up + canonical)");
-                    nextDBM.future(); // future 内部包含 up() 和 canonical()
-                    // System.out.println("        时间流逝后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+                    System.out.println("findWitness:       [步骤 4] 应用时间流逝 (future = up + canonical)");
+                    nextDBM.future();
+                    System.out.println("findWitness:         时间流逝后 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
 
                     boolean emptyAfterFuture = nextDBM.isEmpty();
-                    // System.out.println("        时间流逝后是否为空? " + emptyAfterFuture);
+                    System.out.println("findWitness:         时间流逝后是否为空? " + emptyAfterFuture);
 
                     if (!emptyAfterFuture) {
-                        // System.out.println("      [步骤 5] 检查位置 " + targetLocation + " 的覆盖情况 (新 DBM hash=" + nextDBM.hashCode() + ")");
-                        // --- 检查覆盖与添加 ---
-                        // 获取目标位置已记录的 DBM 列表，如果不存在则返回空列表
+                        System.out.println("findWitness:       [步骤 5] 检查位置 " + targetLocation + " 的覆盖情况 (新 DBM hash=" + nextDBM.hashCode() + ")");
                         List<DBM> passedDBMsForTarget = passed.getOrDefault(targetLocation, Collections.emptyList());
-                        // System.out.println("        目标位置已存在 " + passedDBMsForTarget.size() + " 个已处理 DBM 区域。");
+                        System.out.println("        目标位置已存在 " + passedDBMsForTarget.size() + " 个已处理 DBM 区域。");
 
                         boolean covered = false;
                         DBM coveringDBM = null;
                         int passedIndex = -1;
                         for (int i = 0; i < passedDBMsForTarget.size(); i++) {
                             DBM passedDBM = passedDBMsForTarget.get(i);
-                            // 检查已存在的 DBM 是否包含新的 DBM
                             if (passedDBM.include(nextDBM)) {
                                 covered = true;
                                 coveringDBM = passedDBM;
@@ -529,232 +724,96 @@ public class DTA {
                             }
                         }
 
-                        // System.out.println("        新 DBM 是否被已存在的区域覆盖? " + covered);
+                        System.out.println("        新 DBM 是否被已存在的区域覆盖? " + covered);
 
                         if (!covered) {
-                            // System.out.println("        *** 新状态未被覆盖 ***");
-                            // 移除被新 DBM 包含的旧 DBM (优化，可选但推荐)
-                            // 注意：直接修改 passedDBMsForTarget 可能导致 ConcurrentModificationException，如果迭代器未正确处理
-                            // 一个安全的做法是创建一个新列表
+                            System.out.println("findWitness:         *** 新状态未被覆盖 ***");
                             List<DBM> updatedPassedDBMs = new ArrayList<>();
                             boolean addedNew = false;
                             for (DBM existingDBM : passedDBMsForTarget) {
-                                if (!nextDBM.include(existingDBM)) { // 如果新 DBM 不包含旧 DBM，保留旧 DBM
+                                if (!nextDBM.include(existingDBM)) {
                                     updatedPassedDBMs.add(existingDBM);
                                 } else {
-                                    //System.out.println("          优化: 新 DBM (hash=" + nextDBM.hashCode() + ") 包含了旧 DBM (hash=" + existingDBM.hashCode() + ")，将移除旧 DBM。");
+                                    System.out.println("findWitness:           优化: 新 DBM (hash=" + nextDBM.hashCode() + ") 包含了旧 DBM (hash=" + existingDBM.hashCode() + ")，将移除旧 DBM。");
                                 }
                             }
-                            updatedPassedDBMs.add(nextDBM); // 添加新的 DBM
-                            passed.put(targetLocation, updatedPassedDBMs); // 更新 passed 列表
-                            //System.out.println("        已更新位置 " + targetLocation + " 的 passed 列表 (现在有 " + updatedPassedDBMs.size() + " 个区域)。");
-
+                            updatedPassedDBMs.add(nextDBM);
+                            passed.put(targetLocation, updatedPassedDBMs);
+                            System.out.println("findWitness:         已更新位置 " + targetLocation + " 的 passed 列表 (现在有 " + updatedPassedDBMs.size() + " 个区域)。");
 
                             Pair<Location, DBM> nextPair = Pair.of(targetLocation, nextDBM);
-                            //System.out.println("        添加新状态到 worklist: 位置=" + targetLocation + ", DBM (hash=" + nextDBM.hashCode() + ")");
+                            System.out.println("findWitness:         添加新状态到 worklist: 位置=" + targetLocation + ", DBM (hash=" + nextDBM.hashCode() + ")");
                             worklist.add(nextPair);
 
-                            // 记录前驱信息用于回溯
-//                            System.out.println("        记录前驱: (" + targetLocation + ", DBM hash=" + nextDBM.hashCode() + ") <-- ("
-//                                    + currentLocation + ", DBM hash=" + currentDBM.hashCode() + ") via " + action);
+                            System.out.println("findWitness:         记录前驱: (" + targetLocation + ", DBM hash=" + nextDBM.hashCode() + ") <-- ("
+                                    + currentLocation + ", DBM hash=" + currentDBM.hashCode() + ") via " + action);
                             predecessors.put(nextPair, Pair.of(currentPair, transition));
 
-                            // --- 找到接受状态 ---
                             if (dta.isAccepting(targetLocation)) {
-//                                System.out.println("    !!!!!! [找到接受状态] 位置: " + targetLocation + " !!!!!!");
-//                                System.out.println("    !!!!!! 对应的 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
-//                                System.out.println("    ====== 开始回溯构造 TimedWord ======");
-                                // 找到了到达接受状态的路径，回溯构造反例
+                                System.out.println("findWitness:     !!!!!! [找到接受状态] 位置: " + targetLocation + " !!!!!!");
+                                System.out.println("findWitness:     !!!!!! 对应的 DBM (hash=" + nextDBM.hashCode() + "):\n" + nextDBM);
+                                System.out.println("findWitness:     ====== 开始回溯构造 TimedWord ======");
                                 return Optional.of(reconstructTimedWord(predecessors, nextPair));
                             } else {
-                                // System.out.println("        目标状态 " + targetLocation + " 不是接受状态。");
+                                System.out.println("        目标状态 " + targetLocation + " 不是接受状态。");
                             }
                         } else {
-                            // System.out.println("        新 DBM (hash=" + nextDBM.hashCode() + ") 被已存在的 DBM #" + passedIndex + " (hash=" + coveringDBM.hashCode() + ") 覆盖，剪枝此路径。");
-                            // 可选：打印覆盖它的 DBM
-                            // System.out.println("        覆盖它的 DBM:\n" + coveringDBM);
+                            System.out.println("        新 DBM (hash=" + nextDBM.hashCode() + ") 被已存在的 DBM #" + passedIndex + " (hash=" + coveringDBM.hashCode() + ") 覆盖，剪枝此路径。");
+                            System.out.println("        覆盖它的 DBM:\n" + coveringDBM);
                         }
-                    } else { // emptyAfterFuture
-                        // System.out.println("      [剪枝] 时间流逝后 DBM 为空，剪枝此路径。");
+                    } else {
+                        System.out.println("      [剪枝] 时间流逝后 DBM 为空，剪枝此路径。");
                     }
-                } else { // emptyAfterGuard
-                    // System.out.println("      [剪枝] 应用 Guard 后 DBM 为空，剪枝此路径。");
+                } else {
+                    System.out.println("      [剪枝] 应用 Guard 后 DBM 为空，剪枝此路径。");
                 }
-                // System.out.println("    <-- [完成转移处理] " + action); // 标记转移处理结束
-            } // End for transition
-            // System.out.println("  [完成探索] 完成对来自 " + currentLocation + " 的所有转移的探索。");
-        } // End while
+                System.out.println("    <-- [完成转移处理] " + action);
+            }
+            System.out.println("  [完成探索] 完成对来自 " + currentLocation + " 的所有转移的探索。");
+        }
 
-        // 工作列表为空，未找到接受状态
-        // System.out.println("\n==> BFS 结束，worklist 为空，未找到到达接受状态的路径。");
+        System.out.println("\n==> BFS 结束，worklist 为空，未找到到达接受状态的路径。");
         return Optional.empty();
     }
 
-    /**
-     * 从前驱信息中回溯构造一个 timed word。
-     * (内部可以添加日志)
-     */
     private DelayTimedWord reconstructTimedWord(Map<Pair<Location, DBM>, Pair<Pair<Location, DBM>, Transition>> predecessors, Pair<Location, DBM> finalState) {
-        // System.out.println("  [回溯开始] 从最终状态: " + finalState.getLeft() + ", DBM hash=" + finalState.getRight().hashCode());
-        LinkedList<Pair<Action, Rational>> timedActions = new LinkedList<>();
+        LinkedList<Transition> transitions = new LinkedList<>();
         Pair<Location, DBM> currentState = finalState;
-        int backtrackStep = 0;
-
         while (predecessors.containsKey(currentState)) {
-            backtrackStep++;
-            // System.out.println("    [回溯步骤 " + backtrackStep + "] 当前状态: " + currentState.getLeft() + ", DBM hash=" + currentState.getRight().hashCode());
             Pair<Pair<Location, DBM>, Transition> predInfo = predecessors.get(currentState);
-            Pair<Location, DBM> previousStatePair = predInfo.getLeft();
-            Transition transition = predInfo.getRight();
-            DBM previousDBM = previousStatePair.getRight(); // 这是应用 future 和 reset *之前* 的 DBM
+            transitions.addFirst(predInfo.getRight());
+            currentState = predInfo.getLeft();
+        }
+        System.out.println("findWitness:   [回溯完成] 得到转移序列: " + transitions);
 
-            // System.out.println("      找到前驱状态: " + previousStatePair.getLeft() + ", DBM hash=" + previousDBM.hashCode());
-            // System.out.println("      通过转移: " + transition);
+        LinkedList<Pair<Action, Rational>> timedActions = new LinkedList<>();
+        Set<Clock> clocks = finalState.getValue().getClocks();
+        clocks.remove(Clock.getZeroClock());
+        ClockValuation currentClockValues = ClockValuation.zero(clocks);
+        System.out.println("findWitness:   [前向模拟开始] 初始时钟值: " + currentClockValues);
 
-            // 找到满足 Guard 的延迟
-            // System.out.println("      计算从前驱 DBM 到满足 Guard (" + transition.getGuard() + ") 的延迟...");
-            Rational delay = findWitnessDelay(previousDBM, transition.getGuard()); // 注意：这里传入的是 previousDBM
-            // System.out.println("      计算得到的延迟: " + delay);
+        for (Transition transition : transitions) {
+            System.out.println("findWitness:     [前向模拟步骤] 处理转移: " + transition);
+            Constraint guard = transition.getGuard();
+            Set<Clock> resets = transition.getResets();
+            Action action = transition.getAction();
 
-            // 将 (动作, 延迟) 添加到路径前端
-            timedActions.addFirst(Pair.of(transition.getAction(), delay));
-            // System.out.println("      添加动作和延迟到路径: (" + transition.getAction() + ", " + delay + ")");
+            Rational delay = RegionSolver.solveDelay(currentClockValues, guard).get();
+            System.out.println("findWitness:       计算得到的点延迟: " + delay);
 
-            // 移动到前一个状态
-            currentState = previousStatePair;
+            timedActions.add(Pair.of(action, delay));
+
+            ClockValuation valuesAfterDelay = currentClockValues.delay(delay);
+            currentClockValues = valuesAfterDelay.reset(resets);
+            System.out.println("findWitness:       动作 '" + action + "' 执行后时钟值: " + currentClockValues);
         }
 
-        // System.out.println("  [回溯结束] 到达初始状态 (无前驱)。构造的路径有 " + timedActions.size() + " 个 (动作, 延迟) 对。");
+        System.out.println("findWitness:   [前向模拟结束] 构造的路径有 " + timedActions.size() + " 个 (动作, 延迟) 对。");
         return new DelayTimedWord(timedActions);
     }
 
-    /**
-     * 从给定的 DBM 出发，找到一个最小的非负延迟 d，使得 currentDBM + d 满足 guard。
-     * (内部可以添加日志，特别是 Z3 交互)
-     */
-    public Rational findWitnessDelay(DBM currentDBM, Constraint guard) {
-        // System.out.println("        [findWitnessDelay] 开始查找延迟。输入 DBM (hash=" + currentDBM.hashCode() + "):\n" + currentDBM);
-        // System.out.println("        [findWitnessDelay] 目标 Guard: " + guard);
 
-        // 尝试延迟 0
-        DBM checkDBM = currentDBM.copy();
-        checkDBM.intersect(guard);
-        checkDBM.canonical();
-        if (!checkDBM.isEmpty()) {
-            // System.out.println("        [findWitnessDelay] 延迟 0 即满足 Guard。返回 0。");
-            return Rational.ZERO;
-        }
-        // System.out.println("        [findWitnessDelay] 延迟 0 不满足 Guard，需要使用 Z3 求解。");
 
-        try (Context ctx = new Context()) {
-            Solver solver = ctx.mkSolver();
-            Map<Clock, RealExpr> clockVarMap = new HashMap<>();
-            List<Clock> clockList = currentDBM.getClockList(); // 获取时钟列表
-
-            // 创建 Z3 变量 (跳过零时钟)
-            for (int i = 1; i < clockList.size(); i++) { // 从 1 开始
-                Clock c = clockList.get(i);
-                clockVarMap.put(c, ctx.mkRealConst(c.getName()));
-            }
-            RealExpr z3_d = ctx.mkRealConst("d"); // 延迟变量
-            solver.add(ctx.mkGe(z3_d, ctx.mkReal(0))); // d >= 0
-            // System.out.println("        [findWitnessDelay] 创建 Z3 变量: " + clockVarMap.keySet() + " 和 d >= 0");
-
-            // 将当前 DBM 转换为 Z3 约束
-            // 规范化 DBM 可能简化 Z3 表达式，但理论上非规范的也可以转换
-            DBM canonicalCurrent = currentDBM.copy();
-            canonicalCurrent.canonical(); // 确保使用规范形式转换
-            // System.out.println("        [findWitnessDelay] 转换规范化后的 DBM 到 Z3 约束...");
-            BoolExpr dbmExpr = Z3Converter.DBM2Boolexpr(canonicalCurrent, ctx, clockVarMap);
-            solver.add(dbmExpr);
-            // System.out.println("          DBM Z3 约束: " + dbmExpr);
-
-            // 将延迟后的 Guard 转换为 Z3 约束
-            // System.out.println("        [findWitnessDelay] 转换延迟后的 Guard 到 Z3 约束...");
-            List<BoolExpr> guardConstraints = new ArrayList<>();
-            for (AtomConstraint ac : guard.getConstraints()) {
-                Clock g1 = ac.getClock1();
-                Clock g2 = ac.getClock2();
-                Rational V_guard = ac.getUpperbound();
-                if (V_guard.equals(Rational.INFINITY)) {
-                    // System.out.println("          跳过 Guard 原子约束 (无穷大): " + ac); // 可选
-                    continue; // 无穷约束总是满足
-                }
-                boolean closed_guard = ac.isClosed();
-                RatNum z3_V_guard = Z3Converter.rational2Ratnum(V_guard, ctx); // 假设 Z3Converter.rational2Ratnum 存在
-
-                // 获取时钟对应的 Z3 表达式 (处理零时钟)
-                RealExpr expr_i = g1.isZeroClock() ? ctx.mkReal(0) : clockVarMap.get(g1);
-                RealExpr expr_j = g2.isZeroClock() ? ctx.mkReal(0) : clockVarMap.get(g2);
-
-                // 检查时钟是否在 map 中 (防御性编程)
-                if (expr_i == null && !g1.isZeroClock()) {
-                    throw new IllegalArgumentException("[findWitnessDelay] Z3 变量映射中未找到时钟: " + g1);
-                }
-                if (expr_j == null && !g2.isZeroClock()) {
-                    throw new IllegalArgumentException("[findWitnessDelay] Z3 变量映射中未找到时钟: " + g2);
-                }
-
-                // 计算延迟后的时钟值: c' = c + d (零时钟不变)
-                ArithExpr<RealSort> delayed_expr_i = g1.isZeroClock() ? expr_i : ctx.mkAdd(expr_i, z3_d);
-                ArithExpr<RealSort> delayed_expr_j = g2.isZeroClock() ? expr_j : ctx.mkAdd(expr_j, z3_d);
-
-                // 构造差分约束: c_i' - c_j' <= V 或 < V
-                ArithExpr<RealSort> lhs_delayed = ctx.mkSub(delayed_expr_i, delayed_expr_j);
-
-                BoolExpr guardConstraint;
-                if (closed_guard) {
-                    guardConstraint = ctx.mkLe(lhs_delayed, z3_V_guard); // g1' - g2' <= V
-                } else {
-                    guardConstraint = ctx.mkLt(lhs_delayed, z3_V_guard); // g1' - g2' < V
-                }
-                guardConstraints.add(guardConstraint);
-                // System.out.println("          添加 Guard Z3 约束: " + guardConstraint); // 可选
-            }
-
-            if (!guardConstraints.isEmpty()) {
-                solver.add(ctx.mkAnd(guardConstraints.toArray(new BoolExpr[0])));
-            }
-
-            // System.out.println("        [findWitnessDelay] 调用 Z3 Solver.check()...");
-            Status status = solver.check();
-            // System.out.println("        [findWitnessDelay] Z3 Solver 状态: " + status);
-
-            if (status == Status.SATISFIABLE) {
-                Model model = solver.getModel();
-                Expr<RealSort> d_eval_expr = model.eval(z3_d, true); // 获取 d 的模型值
-                // System.out.println("        [findWitnessDelay] Z3 模型找到解，d = " + d_eval_expr);
-
-                // 确保模型返回的是有理数 (RatNum)
-                if (d_eval_expr instanceof RatNum) {
-                    RatNum d_eval = (RatNum) d_eval_expr;
-                    Rational result = Z3Converter.ratnum2Rational(d_eval);
-                   // System.out.println("        [findWitnessDelay] 转换为 Rational: " + result);
-                    return result;
-                } else {
-                    // Z3 返回了非有理数实数解？对于 DBM 问题理论上不应发生
-                    // System.err.println("警告: Z3 为延迟 d 返回了非有理数值: " + d_eval_expr.getClass() + " = " + d_eval_expr);
-                    // 尝试转换为 double 然后近似为 Rational，或者抛出错误
-                    // 这里简单地抛出错误，因为这通常表示模型或转换有问题
-                    throw new IllegalStateException("[findWitnessDelay] Z3 为延迟 d 返回了非预期的实数类型: " + d_eval_expr.getClass());
-                }
-
-            } else if (status == Status.UNSATISFIABLE) {
-                // System.err.println("错误: Z3 无法找到满足条件的非负延迟 d。");
-                // System.err.println("  当前 DBM (规范化后):\n" + canonicalCurrent);
-                // System.err.println("  目标 Guard: " + guard);
-                // 理论上，如果 BFS 路径是正确的，这里应该总能找到解 (可能是 d=0)
-                // 如果出现 UNSAT，可能意味着 BFS 逻辑、DBM 操作或 Z3 转换存在不一致
-                throw new IllegalStateException("无法找到从 DBM 到满足 Guard 的延迟，尽管 BFS 认为路径存在。DBM:\n" + currentDBM + "\nGuard: " + guard);
-            } else { // status == Status.UNKNOWN
-                // System.err.println("错误: Z3 Solver 返回未知状态。");
-                throw new RuntimeException("Z3 在延迟求解时返回了未知 Solver 状态: " + status + " Solver: " + solver);
-            }
-        } catch (Z3Exception e) {
-            // System.err.println("Z3 异常发生在 findWitnessDelay: " + e.getMessage());
-            throw new RuntimeException("Z3 异常", e); // 重新抛出为 RuntimeException
-        }
-    }
     /**
      * 合并两个时钟配置用于DTA的交集运算。
      * 对于合并后时钟集合中的每个时钟,结果配置会使用两个配置中对应的最大kappa值。
@@ -994,6 +1053,7 @@ public class DTA {
         } // 结束 Z3 Context
         return cta;
     }
+
     public boolean isDeterministic() {
         try (Context ctx = new Context()) {
             Solver solver = ctx.mkSolver();
