@@ -2,6 +2,7 @@ package org.example;
 
 import lombok.Getter;
 import lombok.Setter;
+import org.example.region.Region;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger; // 使用原子类保证线程安全
@@ -135,4 +136,5 @@ public class Clock implements Comparable<Clock> {
         Clock clock = (Clock) obj;
         return Objects.equals(this.id, clock.id);
     }
+
 }

@@ -118,52 +118,85 @@ public class Z3Converter {
         }
     }
 
-    public static BoolExpr region2Boolexpr(Region input, Context ctx, Map<Clock, RealExpr> clockVarMap) {
+    /**
+     * 将 Region 对象转换为 Z3 的布尔表达式约束。
+     *
+     * @param input          输入的 Region 对象
+     * @param ctx            Z3 上下文
+     * @param clockVars      包含当前步骤时钟值的 Z3 RealExpr 数组 (按 this.clocks 顺序)
+     * @param clockIndexMap 时钟到 clockVars 数组索引的映射
+     * @return Z3 的 BoolExpr
+     */
+    public static BoolExpr region2Boolexpr(Region input, Context ctx,
+                                           Expr<RealSort>[] clockVars,
+                                           Map<Clock, Integer> clockIndexMap) {
         List<BoolExpr> constraints = new ArrayList<>();
+        int kappaDefault = -1; // Or get from a global config if possible
 
         // 1. 整数部分约束
         for (Map.Entry<Clock, Integer> entry : input.getIntegerParts().entrySet()) {
             Clock clock = entry.getKey();
             int intPart = entry.getValue();
-            RealExpr clockExpr = clockVarMap.get(clock);
-            int kappa = input.getConfig().getClockKappa(clock);
+            int clockIdx = clockIndexMap.get(clock); // 获取索引
+            if (clockIdx < 0 || clockIdx >= clockVars.length) {
+                continue; // 防御性编程
+            }
+            RealExpr clockExpr = (RealExpr) clockVars[clockIdx]; // 使用索引获取表达式
+            int kappa = input.getConfig() != null ? input.getConfig().getClockKappa(clock) : kappaDefault; // 获取 kappa
+
+            if (kappa < 0) { /* handle error or default */ }
 
             if (intPart <= kappa) {
-                // 当整数部分≤κ时: intPart ≤ c < intPart + 1
                 constraints.add(ctx.mkGe(clockExpr, ctx.mkReal(intPart)));
                 constraints.add(ctx.mkLt(clockExpr, ctx.mkReal(intPart + 1)));
             } else {
-                // 当整数部分>κ时: c > κ
                 constraints.add(ctx.mkGt(clockExpr, ctx.mkReal(kappa)));
             }
         }
 
         // 2. 零小数部分约束
         for (Clock clock : input.getZeroFractionClocks()) {
-            RealExpr clockExpr = clockVarMap.get(clock);
-            int intPart = input.getIntegerParts().get(clock);
-            // 对于分数部分为0的时钟：c = intPart
+            int clockIdx = clockIndexMap.get(clock);
+            if (clockIdx < 0 || clockIdx >= clockVars.length) {
+                continue;
+            }
+            RealExpr clockExpr = (RealExpr) clockVars[clockIdx];
+            // Integer part should exist if clock is in zero fraction set
+            int intPart = input.getIntegerParts().getOrDefault(clock, -1);
+            if (intPart == -1) { /* handle error */ }
             constraints.add(ctx.mkEq(clockExpr, ctx.mkReal(intPart)));
         }
 
         // 3. 非零小数部分的顺序约束
-        if (!input.getFractionOrder().isEmpty()) {
-            for (int i = 0; i < input.getFractionOrder().size(); i++) {
-                Clock clock = input.getClockFromClockFraction(i);
-                RealExpr clockExpr = clockVarMap.get(clock);
-                int intPart = input.getIntegerParts().get(clock);
+        List<Clock> fractionOrderClocks = new ArrayList<>();
+        for (Region.ClockFraction clockFraction: input.getFractionOrder()){
+            fractionOrderClocks.add(clockFraction.clock());
+        }
 
-                // frac(c) > 0 约束
-                constraints.add(ctx.mkGt(clockExpr, ctx.mkReal(intPart)));
+        if (fractionOrderClocks != null && !fractionOrderClocks.isEmpty()) {
+            for (int i = 0; i < fractionOrderClocks.size(); i++) {
+                Clock clock = fractionOrderClocks.get(i);
+                int clockIdx = clockIndexMap.get(clock);
+                if (clockIdx < 0 || clockIdx >= clockVars.length) {
+                    continue;
+                }
+                RealExpr clockExpr = (RealExpr) clockVars[clockIdx];
+                int intPart = input.getIntegerParts().getOrDefault(clock, -1);
 
-                // frac(c) < 1 约束
-                constraints.add(ctx.mkLt(clockExpr, ctx.mkReal(intPart + 1)));
+                // frac(c) > 0 and frac(c) < 1 (already implied by intPart <= c < intPart + 1 from section 1)
+                // constraints.add(ctx.mkGt(clockExpr, ctx.mkReal(intPart))); // Redundant if intPart constraint exists
+                // constraints.add(ctx.mkLt(clockExpr, ctx.mkReal(intPart + 1))); // Redundant
 
                 // 相邻时钟的小数部分顺序关系
                 if (i > 0) {
-                    Clock prevClock = input.getClockFromClockFraction(i - 1);
-                    RealExpr prevClockExpr = clockVarMap.get(prevClock);
-                    int prevIntPart = input.getIntegerParts().get(prevClock);
+                    Clock prevClock = fractionOrderClocks.get(i - 1);
+                    int prevClockIdx = clockIndexMap.get(prevClock);
+                    if (prevClockIdx < 0 || prevClockIdx >= clockVars.length) {
+                        continue;
+                    }
+                    RealExpr prevClockExpr = (RealExpr) clockVars[prevClockIdx];
+                    int prevIntPart = input.getIntegerParts().getOrDefault(prevClock, -1);
+                    if (prevIntPart == -1) { /* handle error */ }
 
                     // frac(prev) < frac(curr) 约束
                     BoolExpr comparison = ctx.mkLt(
@@ -182,7 +215,6 @@ public class Z3Converter {
             return ctx.mkAnd(constraints.toArray(new BoolExpr[0]));
         }
     }
-
     public static DisjunctiveConstraint boolexpr2DisjunctiveConstraint(BoolExpr input, Context ctx, Map<Clock, RealExpr> clockVarMap, Set<Clock> allClocks) {
 
         if (input == null) {

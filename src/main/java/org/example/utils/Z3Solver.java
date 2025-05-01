@@ -1,12 +1,14 @@
 package org.example.utils;
 
 import com.microsoft.z3.*;
+import lombok.Getter;
 import org.example.Clock;
 import org.example.ClockValuation;
 import org.example.constraint.Constraint;
 import org.example.constraint.DisjunctiveConstraint;
 import org.example.constraint.ValidityStatus;
 import org.example.region.Region;
+import org.example.words.RegionTimedWord;
 // 假设 Rational 和 Z3Converter 类存在且功能正确
 // import org.example.utils.Rational;
 // import org.example.utils.Z3Converter;
@@ -31,6 +33,11 @@ public class Z3Solver implements AutoCloseable {
     // 为每个线程提供独立的 Z3 Solver，用于增量求解
     private final ThreadLocal<Solver> threadSolver;
 
+    private Set<Clock> globalClocks;
+
+    @Getter
+    private Map<Clock, Integer> clockIndexMap;
+
     /**
      * 创建一个新的 Z3Solver 实例。
      * 初始化 ThreadLocal，以便每个线程首次使用时创建自己的 Z3 Context 和 Solver。
@@ -44,6 +51,22 @@ public class Z3Solver implements AutoCloseable {
             System.out.println("为线程 " + Thread.currentThread().getId() + " 初始化空的 Z3 Solver");
             return solver;
         });
+    }
+
+    public Z3Solver(Set<Clock> clocks) {
+        this.threadCtx = ThreadLocal.withInitial(Context::new);
+        this.threadSolver = ThreadLocal.withInitial(() -> {
+            Context ctx = threadCtx.get(); // 获取当前线程的 Context
+            Solver solver = ctx.mkSolver();
+            System.out.println("为线程 " + Thread.currentThread().getId() + " 初始化空的 Z3 Solver");
+            return solver;
+        });
+        this.globalClocks = clocks;
+        this.clockIndexMap = new HashMap<>();
+        int index = 0;
+        for (Clock clock : clocks) {
+            clockIndexMap.put(clock, index++);
+        }
     }
 
     /**
@@ -67,6 +90,7 @@ public class Z3Solver implements AutoCloseable {
         return solver;
     }
 
+
     // --- 核心约束检查方法 (使用增量 Solver) ---
 
     /**
@@ -82,7 +106,9 @@ public class Z3Solver implements AutoCloseable {
 
         // 快速检查已知状态
         ValidityStatus knownStatus = constraint.getKnownStatus();
-        if (knownStatus == ValidityStatus.FALSE) return false;
+        if (knownStatus == ValidityStatus.FALSE) {
+            return false;
+        }
         // 注意：不能在这里检查 TRUE，因为可满足性不等于恒真
 
         Solver solver = getSolver();
@@ -137,8 +163,12 @@ public class Z3Solver implements AutoCloseable {
 
         // 快速检查已知状态
         ValidityStatus knownStatus = constraint.getKnownStatus();
-        if (knownStatus == ValidityStatus.TRUE) return true;
-        if (knownStatus == ValidityStatus.FALSE) return false;
+        if (knownStatus == ValidityStatus.TRUE) {
+            return true;
+        }
+        if (knownStatus == ValidityStatus.FALSE) {
+            return false;
+        }
 
         Solver solver = getSolver();
         Context ctx = getContext();
@@ -192,7 +222,9 @@ public class Z3Solver implements AutoCloseable {
 
         // 快速检查已知状态
         ValidityStatus knownStatus = dc.getKnownStatus();
-        if (knownStatus == ValidityStatus.FALSE) return false;
+        if (knownStatus == ValidityStatus.FALSE) {
+            return false;
+        }
 
         Solver solver = getSolver();
         Context ctx = getContext();
@@ -245,8 +277,12 @@ public class Z3Solver implements AutoCloseable {
 
         // 快速检查已知状态
         ValidityStatus knownStatus = dc.getKnownStatus();
-        if (knownStatus == ValidityStatus.TRUE) return true;
-        if (knownStatus == ValidityStatus.FALSE) return false;
+        if (knownStatus == ValidityStatus.TRUE) {
+            return true;
+        }
+        if (knownStatus == ValidityStatus.FALSE) {
+            return false;
+        }
 
         Solver solver = getSolver();
         Context ctx = getContext();
@@ -367,6 +403,105 @@ public class Z3Solver implements AutoCloseable {
             popSolver(solver);
         }
         return result;
+    }
+
+    public boolean checkPathFeasibilityWithZ3(
+            ClockValuation startValuation,
+            RegionTimedWord suffix,
+            List<Set<Clock>> guessedResetSequence) throws Z3Exception {
+
+        int k = suffix.length();
+        if (k == 0) {
+            return true; // 空后缀总是可行的
+        }
+        // 检查 guessedResetSequence 长度是否匹配 k
+        if (guessedResetSequence.size() != k) {
+            throw new IllegalArgumentException("Reset sequence length (" + guessedResetSequence.size()
+                    + ") must match suffix length (" + k + ").");
+        }
+
+        // 从封装类获取资源
+        Solver currentSolver = getSolver();
+        Context currentContext = getContext();
+
+        currentSolver.push(); // 创建回溯点，隔离本次检查的约束
+
+        try {
+            int numClocks = globalClocks.size();
+            List<Clock> clocks = globalClocks.stream().toList();
+
+            // --- 1. 定义 Z3 变量 ---
+            // 时间延迟变量 d_1, ..., d_k (局部于本次检查)
+            Expr<RealSort>[] d = new Expr[k];
+            for (int i = 0; i < k; i++) {
+                d[i] = currentContext.mkRealConst("d_" + System.nanoTime() + "_" + i);
+                currentSolver.add(currentContext.mkGe(d[i], currentContext.mkReal(0))); // d_i >= 0
+            }
+
+            // 时钟状态 Z3 表达式 (局部于本次计算)
+            // v_current[j] 表示当前步骤 i 结束时，时钟 j 的 Z3 表达式
+            Expr<RealSort>[] v_current = new Expr[numClocks];
+            // 初始化 v_current 为 startValuation
+            for (int j = 0; j < numClocks; j++) {
+                Clock clock = clocks.get(j); // 直接从列表获取，保证顺序
+                // 确保 startValuation 包含所有全局时钟的值
+                Rational value = startValuation.getValue(clock); // 提供默认值以防万一
+                v_current[j] = Z3Converter.rational2Ratnum(value, currentContext); // 使用 mkReal
+            }
+
+            // --- 2. 构建路径约束 ---
+            // 假设 suffix.getRegions() 返回 List<Region>
+            List<Region> regions = suffix.getRegion();
+            if (regions.size() != k) {
+                throw new IllegalArgumentException("Number of regions (" + regions.size()
+                        + ") must match suffix length (" + k + ").");
+            }
+
+
+            for (int i = 0; i < k; i++) { // 遍历后缀的每一步
+                Region targetRegion = regions.get(i);
+                Set<Clock> resetsInThisStep = guessedResetSequence.get(i);
+
+                // 计算时间流逝后的时钟值 v'' = v_current + d[i]
+                Expr<RealSort>[] v_after_delay = new Expr[numClocks];
+                for (int j = 0; j < numClocks; j++) {
+                    v_after_delay[j] = currentContext.mkAdd(v_current[j], d[i]);
+                }
+
+                // 应用 Reset，得到 v_next
+                Expr<RealSort>[] v_next = new Expr[numClocks];
+                for (int j = 0; j < numClocks; j++) {
+                    Clock clock = clocks.get(j);
+                    if (resetsInThisStep.contains(clock)) {
+                        v_next[j] = currentContext.mkReal(0); // Reset to 0
+                    } else {
+                        v_next[j] = v_after_delay[j]; // No reset
+                    }
+                }
+
+                // 添加区域约束: v_next \in targetRegion
+                // 调用你的静态转换方法，传入当前计算出的 v_next 数组
+                // 和从封装类获取的 clockIndexMap
+                BoolExpr regionConstraint = Z3Converter.region2Boolexpr(
+                        targetRegion,       // 当前区域
+                        currentContext,     // Z3 上下文
+                        v_next,             // 当前步骤计算出的 Z3 表达式数组
+                        getClockIndexMap()  // 时钟到索引的映射
+                );
+                currentSolver.add(regionConstraint);
+
+                // 更新 v_current 为 v_next，为下一步做准备
+                v_current = v_next;
+            }
+
+            // --- 3. 检查可满足性 ---
+            Status status = currentSolver.check();
+
+            return status == Status.SATISFIABLE;
+
+        } finally {
+            currentSolver.pop(); // 恢复到调用 push() 之前的状态，移除本次检查添加的约束和变量
+        }
     }
 
 
@@ -534,7 +669,9 @@ public class Z3Solver implements AutoCloseable {
             }
 
             // 零时钟通常没有约束，或者由 Region 内部处理
-            if (clock.isZeroClock()) continue;
+            if (clock.isZeroClock()) {
+                continue;
+            }
 
             // 时钟配置和目标区域定义
             int kappa = targetRegion.getConfig().getClockKappa(clock); // 假设 Region 关联了配置

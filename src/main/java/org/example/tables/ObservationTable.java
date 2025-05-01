@@ -17,6 +17,7 @@ import org.example.region.RegionSolver;
 import org.example.teacher.NormalTeacher;
 import org.example.utils.Rational;
 import org.example.utils.Z3Converter;
+import org.example.utils.Z3Solver;
 import org.example.words.DelayTimedWord;
 import org.example.words.RegionTimedWord;
 import org.example.words.ResetClockTimedWord;
@@ -44,6 +45,7 @@ public class ObservationTable implements Cloneable {
     private final NormalTeacher normalTeacher;
     private final ClockConfiguration configuration;
     private int guessCount = 0;
+    private Z3Solver z3Solver;
 
     // 缓存结构
     private Map<ResetClockTimedWord, Row> rowCache = new HashMap<>(); // 行缓存（前缀 -> 行数据）
@@ -83,6 +85,8 @@ public class ObservationTable implements Cloneable {
 
         this.f = new HashMap<>();
         this.g = new HashMap<>();
+
+        this.z3Solver = new Z3Solver(this.clocks);
     }
     public ObservationTable(ObservationTable other) {
         this.alphabet = other.alphabet;
@@ -164,6 +168,7 @@ public class ObservationTable implements Cloneable {
         for (InconsistencyRecord record : other.inconsistencyRecords) {
             this.inconsistencyRecords.add(new InconsistencyRecord(record));
         }
+        this.z3Solver = other.z3Solver;
     }
 
     public boolean isClosed() {
@@ -275,7 +280,7 @@ public class ObservationTable implements Cloneable {
 
 
             System.out.println("guessClosing: 为具有完整新边界的实例调用 fillTable");
-            // fillTable 负责计算新 R 行的 f 和 g 值 (可能涉及 MQ 和进一步猜测)
+            // fillTable 负责计算新 R 行的 f 和 g 值
             List<ObservationTable> filledInstances = specificInstance.fillTable();
             finalTableInstances.addAll(filledInstances);
 
@@ -520,7 +525,7 @@ public class ObservationTable implements Cloneable {
                 Pair<ResetClockTimedWord, RegionTimedWord> key = Pair.of(prefix, suffix);
                 if (suffix.isEmpty()) {
                     // 1.1 处理空后缀（确定性情况）
-                    // 空后缀不需要猜测，f 值直接通过查询前缀本身得到，g 值为空列表
+                    // 空后缀不需要猜测，f 值直接通过查询前缀本身得到，g 值为空
                     try {
                         // 尝试填充 f 值，如果键不存在
                         f.putIfAbsent(key, normalTeacher.membershipQuery(prefix.toResetDelayTimedWord(this.clocks).toDelayTimedWord()));
@@ -530,6 +535,7 @@ public class ObservationTable implements Cloneable {
                     } catch (Exception e) {
                         // 捕获成员查询或转换中可能出现的任何异常
                         System.err.println("fillTable: 处理空后缀 (" + prefix + ", " + suffix + ") 时无有效延迟，已放弃当前实例: " + e.getMessage());
+                        return Collections.emptyList();
                     }
                     continue; // 继续处理下一个后缀
                 }
@@ -544,21 +550,8 @@ public class ObservationTable implements Cloneable {
         // 2. 处理简单情况（无需填充）
         List<ObservationTable> completedTables = new ArrayList<>();
         if (entriesToFill.isEmpty()) {
-            // 表中所有条目都已存在，无需填充
             System.out.println("fillTable: 不需要填充任何条目。");
-            try {
-                // 即使无需填充，也创建一个当前状态的副本返回
-                ObservationTable currentCompleteTable = new ObservationTable(this);
-                // 构建缓存以确保返回的表是立即可用的
-                currentCompleteTable.buildCaches();
-                completedTables.add(currentCompleteTable);
-            } catch (Exception e) {
-                // 捕获复制或构建缓存时可能出现的错误
-                System.err.println("fillTable 错误: 在无需填充的情况下创建最终表副本时出错: " + e.getMessage());
-                // 这种情况下可能无法返回有效结果，返回空列表
-                return Collections.emptyList();
-            }
-            return completedTables;
+            return Collections.singletonList(this);
         }
 
         // 3. 准备广度优先搜索 (BFS)
@@ -678,11 +671,21 @@ public class ObservationTable implements Cloneable {
                 ObservationTable nextTableState = null;
 
                 try {
-                    // a. 验证猜测有效性：尝试转换区域后缀为重置时钟后缀
-                    suffixWord = suffix_e.toResetClockTimedWord(
-                            guessedResetSequence, startValuationForSuffix, this.clocks, this.configuration);
+//                    if (!z3Solver.checkPathFeasibilityWithZ3(startValuationForSuffix, suffix_e, guessedResetSequence)){
+//                        continue;
+//                    }
 
-                    if (suffixWord != null) { // 猜测导致了有效的时间字序列
+                    // a. 验证猜测有效性：尝试转换区域后缀为重置时钟后缀
+                    Pair<Boolean, ResetClockTimedWord> temp = suffix_e.toResetClockTimedWord(
+                            guessedResetSequence, startValuationForSuffix);
+
+                    if (!temp.getLeft()) {
+                        continue;
+                    }
+                    suffixWord = temp.getRight();
+                    // suffixWord = suffix_e.toResetClockTimedWord(guessedResetSequence, startValuationForSuffix).getRight();
+
+                    if (suffixWord != null) {
                         validGuessesForEntry.incrementAndGet(); // 增加有效猜测计数
 
                         // b. 构造完整词并执行成员查询
@@ -721,7 +724,10 @@ public class ObservationTable implements Cloneable {
             } // 结束对当前条目所有猜测的循环
 
             if (validGuessesForEntry.get() == 0 && !suffix_e.isEmpty()) {
-                System.err.println("fillTable 警告: 对于条目 (" + prefix + ", " + suffix_e + ")，未找到任何有效的重置序列猜测。该 BFS 分支终止。");
+                System.out.println("fillTable: 对于条目 (" + prefix + ", " + suffix_e + ")，未找到任何有效的重置序列猜测。默认拒绝。");
+                currentTableState.f.put(Pair.of(prefix, suffix_e), false);
+                currentTableState.g.put(Pair.of(prefix, suffix_e), clocks.stream().map(Collections::singleton).collect(Collectors.toList()));
+                queue.add(Pair.of(remainingItemsForAllBranches.iterator(), currentTableState));
             }
 
         }
@@ -729,6 +735,8 @@ public class ObservationTable implements Cloneable {
         System.out.println("fillTable: 填充过程完成。生成了 " + completedTables.size() + " 个完整表实例。");
         return completedTables;
     }
+
+
 
     /**
      * 生成给定长度的所有可能的重置序列组合(迭代版本)。

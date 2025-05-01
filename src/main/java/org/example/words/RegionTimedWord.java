@@ -40,22 +40,16 @@ public final class RegionTimedWord extends Word<Pair<Action, Region>> {
      *
      * @param resetSequence  每个区域动作对应的重置集合列表，长度必须与本区域字相同。
      * @param startValuation 执行本区域字之前的时钟状态。
-     * @param clocks         系统中的时钟集合。
-     * @param configuration  区域配置。
      * @return 转换后的 ResetClockTimedWord，如果无法找到有效的延时序列则返回 null。
      * @throws IllegalArgumentException 如果 resetSequence 长度不匹配。
      */
-    public ResetClockTimedWord toResetClockTimedWord(
-            List<Set<Clock>> resetSequence,
-            ClockValuation startValuation,
-            Set<Clock> clocks,
-            ClockConfiguration configuration) {
+    public Pair<Boolean, ResetClockTimedWord> toResetClockTimedWord(List<Set<Clock>> resetSequence, ClockValuation startValuation) {
 
         if (resetSequence.size() != this.timedActions.size()) {
             throw new IllegalArgumentException("重置长度与区域字不符");
         }
         if (this.isEmpty()) {
-            return ResetClockTimedWord.EMPTY;
+            return Pair.of(true, ResetClockTimedWord.EMPTY);
         }
 
         List<Triple<Action, ClockValuation, Set<Clock>>> resultingActions = new ArrayList<>();
@@ -71,7 +65,7 @@ public final class RegionTimedWord extends Word<Pair<Action, Region>> {
             Optional<Rational> delayOpt = RegionSolver.solveDelay(currentValuation, region);
 
             if (delayOpt.isEmpty()) {
-                throw new IllegalArgumentException("无法为区域 " + region + " 从状态 " + currentValuation + " 找到有效延时");
+                return Pair.of(false, null);
             }
 
             Rational delay = delayOpt.get();
@@ -85,7 +79,7 @@ public final class RegionTimedWord extends Word<Pair<Action, Region>> {
             currentValuation = nextValuation; // 更新当前状态以进行下一步计算
         }
 
-        return new ResetClockTimedWord(resultingActions);
+        return Pair.of(true, new ResetClockTimedWord(resultingActions));
     }
 
     public boolean isEquivalent(RegionTimedWord other) {
