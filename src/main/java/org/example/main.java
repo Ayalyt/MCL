@@ -14,11 +14,13 @@ public class main {
     public static void main(String[] args) {
         try {
             Double time0 = System.currentTimeMillis() / 1000.0;
-            DTA dta = Serializer.load("D:\\工作文件\\常用项目\\MCL\\src\\main\\java\\assets\\automata\\temp4.json");
+            DTA dta = Serializer.load(
+                    "D:\\工作文件\\常用项目\\MCL\\src\\main\\java\\assets\\" +
+                            "automata\\3_1_3_2-1.json");
             NormalTeacher teacher = new NormalTeacher(dta);
             DTALearner learner = new DTALearner(dta.getAlphabet(), dta.getClocks().size(), teacher, dta.getConfiguration());
             DTA newDTA = learner.learn();
-            Double time1 = System.currentTimeMillis() / 1000.0;
+            Double time1 = System.currentTimeMillis() / 1000.0;                                                time0 = System.currentTimeMillis() / 1000.0;
             System.out.println(newDTA.toString());
             System.out.println("成员查询次数：" + teacher.getNumOfMq());
             System.out.println("等价查询次数：" + teacher.getNumOfEq());

@@ -1,0 +1,28 @@
+{
+  "name" : "case_3_1_3_2_3",
+  "clocks" : ["c0", "c1"],
+  "actions" : ["a"],
+  "locations" : [
+    {
+      "name": "l0",
+      "invariant": {},
+      "accepting": false
+    },
+    {
+      "name": "l1",
+      "invariant": {},
+      "accepting": true
+    },
+    {
+      "name": "l2",
+      "invariant": {},
+      "accepting": true
+    }
+  ],
+  "transitions" : [
+    {"source": "l0","action": "a","guard": {"c1": "[0,0]"},"reset": ["c1"],"target": "l1"},
+    {"source": "l1","action": "a","guard": {"c0": "[0,3)"},"reset": ["c0"],"target": "l2"},
+    {"source": "l2","action": "a","guard": {"c0": "[1,2]","c1": "[0,3]"},"reset": [],"target": "l0"}
+  ],
+  "init_location" : "l0"
+}
